@@ -9,6 +9,7 @@
 #include "mbedtls/ed25519.h"
 #include "include/forge_stability_heuristics.hpp"
 #include "include/forge_crypto_lease.hpp"
+#include "include/forge_modal_calibration.hpp"
 
 // --- CONFIGURATION ---
 #define SAMPLE_RATE         48000
