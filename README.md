@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23858855.svg)](https://doi.org/10.5281/zenodo.23858855)
+
 > [!IMPORTANT]
 > **Proprietary Notice & Institutional Attribution**
 > **Forge AI** is an intellectual property and flagship industrial execution product of **RMAA HOLDINGS**. All rights reserved.
