@@ -1,9 +1,9 @@
-# ENGINEERING RELEASE • REV 1.0 — FORGE AI — HARDWARE PROTOTYPE
+# ENGINEERING RELEASE • REV 1.1 (HARDENED) — FORGE AI — HARDWARE PROTOTYPE
 ### Complete Bill of Materials (BOM) & Bench Assembly Technical Specifications
 **Author:** Ali CNC Engineering • **Project:** ForgeAI Spindle Defense System for CNCs  
 **Target Silicon:** ESP32-S3 (Dual-Core Xtensa LX7 @ 240 MHz) • **Response Latency:** < 2.0 ms (Edge E-Stop)  
 **Estimated Local Market Total:** Rs. 3,000 – 3,400 PKR (~$10–12 USD) • **Licensed under:** BSL 1.1 • Rawalpindi, Pakistan  
-**Original Engineering PDF:** [`hardware/FORGE_AI_HARDWARE_PROTOTYPE_REV1.0.pdf`](FORGE_AI_HARDWARE_PROTOTYPE_REV1.0.pdf)
+**Original Engineering PDF:** [`hardware/FORGE_AI_HARDWARE_PROTOTYPE_REV1.1.pdf`](FORGE_AI_HARDWARE_PROTOTYPE_REV1.0.pdf)
 
 ---
 
@@ -22,10 +22,13 @@ Itemized checklist for component distributors (College Road / Electronic Market)
 | # | Component Name | Technical Specification | Qty | Function / Role |
 |---|---|---|---|---|
 | **1** | **ESP32-S3 DevKit Board** | ESP32-S3-WROOM-1 / N16R8 (16MB Flash, 8MB Octal PSRAM, Dual Type-C) | 1 pc | Main Edge Processor • Runs 48 kHz I2S DMA + 2048-pt hardware FFT |
-| **2** | **INMP441 MEMS Microphone** | Omnidirectional Digital I2S Module (High SNR 61 dBA, Bottom-ported, 24-bit) | 1 pc | Direct acoustic ingestion from CNC spindle chassis |
-| **3** | **PC817 Optocoupler Breakout** | PC817 1-Channel / 2-Channel Module (Screw terminals, 5kV galvanic isolation) | 1 pc | Galvanically isolated E-Stop trigger • Protects CNC controller |
+| **2** | **INMP441 MEMS Microphone** | Omnidirectional Digital I2S Module (High SNR 61 dBA, Bottom-ported, 24-bit) | 1 pc | Acoustic ingestion with acoustic compression coupling |
+| **2b**| **Acoustic Gasket Ring** | Shore 40A Viscoelastic Silicone / Polyurethane O-ring (OD 8mm, ID 4mm) | 1 pc | Sealed compression chamber (>30 dB ambient shop noise isolation) |
+| **3** | **High-Speed Optoisolator** | 6N137 / FOD260L High-Speed (10 MBd) with internal Schmitt Trigger & 2N7002 MOSFET buffer | 1 pc | Active 24V industrial pull-down (< 75 ns delay, immune to CTR aging) |
 | **4** | **Prototyping Breadboard** | MB-102 Full Size (830 Tie-Points) *(Do not purchase mini 400-point board)* | 1 pc | Provides sufficient clearance on both sides of wide ESP32-S3 |
-| **5** | **Dupont Jumper Wires (M-F)** | Male-to-Female Ribbon Cable (20cm) | 1 pack (40 pcs) | Module pin headers to breadboard interconnects |
+| **5** | **Shielded Twisted Pair (STP)** | 4-Pair Shielded Cable with Drain Wire (replaces raw unshielded ribbon) | 1 m | Eliminates VFD PWM capacitive crosstalk on SCK/WS/SD lines |
+| **5b**| **NiZn Ferrite Clamp Choke** | Split-Core Ferrite Clamp (>150Ω @ 100MHz, e.g. TDK / Würth) | 1 pc | Common-mode VFD transient suppression on sensor harness |
+| **5c**| **Series Damping Resistors** | 33Ω Metal Film 1/4W Resistors | 3 pcs | Terminated on SCK, WS, and SD to suppress transmission line ringing |
 | **6** | **Dupont Jumper Wires (M-M)** | Male-to-Male Ribbon Cable (20cm) | 1 pack (40 pcs) | Breadboard rail jumpers and circuit interconnects |
 | **7** | **Visual Trip Indicator LEDs** | 5mm High-Brightness Diffused Red LEDs | 5 pcs | Visual E-Stop trip confirmation on test bench |
 | **8** | **Current-Limiting Resistors** | 220Ω or 330Ω Metal Film (1/4 Watt, 5%) | 5 pcs | Limits LED & optocoupler diode forward current |
@@ -53,19 +56,33 @@ Itemized checklist for component distributors (College Road / Electronic Market)
 
 ---
 
-### B. PC817 Optocoupler & Isolated E-Stop Trip Circuit
+### B. Active High-Speed Optoisolator (6N137 / FOD260L) + 2N7002 Driver Circuit
 
-The optocoupler ensures physical galvanic isolation between the microcontroller and the CNC emergency stop circuit.
+Upgraded from standard PC817 to eliminate CTR saturation starvation on 24V industrial CNC controller inputs (e.g., Mach3, NcStudio, RichAuto DSP).
 
-| Optocoupler Pin | Connection Point | Description / Circuit Function |
+```
+   ESP32-S3 (Primary Side)                      CNC Controller (Secondary Side - 24V Loop)
+  ┌─────────────────────────┐                  ┌──────────────────────────────────────────┐
+  │                         │                  │                                          │
+  │  GPIO 18 ──[ 330Ω ]─────┼─►[Pin 2: Anode ] │  +24V CNC Rail ──[ 2.2kΩ Pull-up ]──┐    │
+  │                         │  [      6N137  ] │                                     │    │
+  │  GND ───────────────────┼─►[Pin 3: Cath ]  │  Gate (2N7002) ◄───[Pin 6: VO (Open)]│   │
+  │                         │                  │  Drain (2N7002) ────────────────────┴─► E-Stop Input (Tripped)
+  │                         │                  │  Source (2N7002) ────────────────────► CNC Isolated GND
+  └─────────────────────────┘                  └──────────────────────────────────────────┘
+```
+
+| Component Pin | Connection Point | Technical Purpose |
 |---|---|---|
-| **Pin 1 (Anode)** | `GPIO 5` (via 330Ω resistor) | MCU Logic HIGH triggers internal infrared transmitter diode |
-| **Pin 2 (Cathode)** | `ESP32 GND` | Completes primary low-voltage circuit |
-| **Pin 4 (Collector)**| `+9V` (Red Lead of 9V Battery) | High-side isolated voltage supply |
-| **Pin 3 (Emitter)**  | `LED Anode (+)` → `330Ω` → `9V GND (-)` | When tripped, current conducts from 9V battery through the Red LED to ground |
+| **6N137 Pin 2 (Anode)** | `GPIO 18` via 330Ω | Clean ~6.2 mA forward drive current |
+| **6N137 Pin 3 (Cathode)** | `ESP32 GND` | System digital ground return |
+| **6N137 Pin 6 (V_OUT)** | Gate of `2N7002` N-MOSFET | High-speed logic edge (< 75 ns transition) |
+| **2N7002 Drain** | CNC 24V E-Stop Terminal | Direct pull-down (< 0.1V saturation, zero CTR degradation) |
+| **2N7002 Source** | CNC Isolated Ground | Isolated machine control loop reference |
 
-> **CIRCUIT BEHAVIOR VERIFICATION:**  
-> Under normal spindle operation, `GPIO 5` remains LOW (0V). When chatter harmonics exceed safety envelopes, the ESP-DSP firmware pulls `GPIO 5` HIGH (3.3V). The phototransistor saturates within **< 2.0 ms**, illuminating the Red LED and opening/closing the CNC E-Stop / Feed-Hold contact.
+> **VFD NOISE & ACOUSTIC IMPEDANCE DEFENSE:**  
+> 1. **Acoustic Waveguide:** The INMP441 bottom port is mechanically compression-sealed to the spindle casing using a Shore 40A silicone O-ring, creating an enclosed resonant cavity isolating airborne factory noise (> 30 dB attenuation).  
+> 2. **I2S Shielded Line:** I2S lines (SCK, WS, SD) run over Shielded Twisted Pair (STP) with 33Ω series damping resistors at both ends and a NiZn ferrite choke to reject high dv/dt VFD motor switching transients.
 
 ---
 
