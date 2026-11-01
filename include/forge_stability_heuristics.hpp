@@ -28,7 +28,95 @@ typedef enum {
 } entry_transient_state_t;
 
 // ----------------------------------------------------------------------------
-// 1. Entry Shock & Plunge Transient Filter
+// 1. Workpiece Material Classification & Adaptive Profiles
+// Autonomous inference within first 100ms of steady engagement
+// ----------------------------------------------------------------------------
+typedef enum {
+    MAT_UNKNOWN   = 0,
+    MAT_ALUMINUM  = 1,
+    MAT_WOOD_MDF  = 2,
+    MAT_BRASS     = 3
+} workpiece_mat_t;
+
+typedef struct {
+    float gamma_ref;         // Stability metric baseline (0.55 - 0.78)
+    float crest_factor_trip; // Crest factor alarm ratio (3.5x - 6.0x)
+    float slew_down;         // Rapid de-escalation rate (-60%/s to -200%/s)
+    float slew_up;           // Slow recovery rate (+8%/s to +25%/s)
+    float fro_min_floor;     // Hard anti-rubbing / anti-BUE clamp (25% - 40%)
+    float kp;                // PI proportional gain
+    float ki;                // PI integral gain
+} forge_material_profile_t;
+
+static inline forge_material_profile_t forge_get_material_profile(workpiece_mat_t mat) {
+    forge_material_profile_t p;
+    switch (mat) {
+        case MAT_ALUMINUM:
+            p.gamma_ref         = 0.78f;
+            p.crest_factor_trip = 3.5f;
+            p.slew_down         = 200.0f; // -200%/s
+            p.slew_up           = 8.0f;   // +8%/s
+            p.fro_min_floor     = 40.0f;  // Prevent strain-hardening & BUE
+            p.kp                = 65.0f;
+            p.ki                = 22.0f;
+            break;
+        case MAT_WOOD_MDF:
+            p.gamma_ref         = 0.55f;
+            p.crest_factor_trip = 6.0f;
+            p.slew_down         = 60.0f;  // -60%/s
+            p.slew_up           = 25.0f;  // +25%/s
+            p.fro_min_floor     = 25.0f;  // Prevent friction burning/charring
+            p.kp                = 30.0f;
+            p.ki                = 8.0f;
+            break;
+        case MAT_BRASS:
+            p.gamma_ref         = 0.65f;
+            p.crest_factor_trip = 4.2f;
+            p.slew_down         = 120.0f; // -120%/s
+            p.slew_up           = 15.0f;  // +15%/s
+            p.fro_min_floor     = 30.0f;
+            p.kp                = 45.0f;
+            p.ki                = 15.0f;
+            break;
+        case MAT_UNKNOWN:
+        default:
+            p.gamma_ref         = 0.70f;
+            p.crest_factor_trip = 4.5f;
+            p.slew_down         = 150.0f;
+            p.slew_up           = 15.0f;
+            p.fro_min_floor     = 35.0f;
+            p.kp                = 45.0f;
+            p.ki                = 15.0f;
+            break;
+    }
+    return p;
+}
+
+/**
+ * @brief Autonomous Material Classification Heuristic within 100ms.
+ * Evaluates spectral entropy, spectral centroid, high-to-low energy ratio, and comb crest.
+ */
+static inline workpiece_mat_t forge_classify_workpiece(float h_spec,
+                                                       float c_spec,
+                                                       float psi_hl,
+                                                       float cf_comb) {
+    // Aluminum 6061-T6: Dominant comb peaks, low broadband entropy, high comb crest
+    if (h_spec < 0.48f && cf_comb > 5.5f && psi_hl < 1.2f) {
+        return MAT_ALUMINUM;
+    }
+    // 360 Free-Cutting Brass: Discontinuous chip fracture elevates high-frequency hiss
+    if (h_spec >= 0.70f && c_spec > 6500.0f && psi_hl >= 2.0f) {
+        return MAT_BRASS;
+    }
+    // Hardwood/Dense MDF: High internal cellular damping, mid-band acoustic hump
+    if (h_spec >= 0.48f && h_spec < 0.72f && c_spec <= 6500.0f) {
+        return MAT_WOOD_MDF;
+    }
+    return MAT_UNKNOWN;
+}
+
+// ----------------------------------------------------------------------------
+// 2. Entry Shock & Plunge Transient Filter
 // Separates self-limiting workpiece entry shock from brittle carbide tip cleavage.
 // ----------------------------------------------------------------------------
 typedef struct {
@@ -49,14 +137,6 @@ static inline void forge_entry_filter_init(forge_entry_transient_filter_t* f) {
     f->last_rms = 100.0f;
 }
 
-/**
- * @brief Evaluates whether a high-energy RMS spike is a normal plunge or tip fracture.
- * @param f Filter state
- * @param current_rms Sub-window RMS energy
- * @param dt_ms Time step in milliseconds (e.g. 1.33 ms for 64 samples at 48kHz)
- * @param out_suppress_trip Pointer returning true if E-stop should be temporarily blanked
- * @return True if catastrophic carbide tip cleavage is verified; False if normal plunge/steady
- */
 static inline bool forge_entry_filter_step(forge_entry_transient_filter_t* f,
                                            float current_rms,
                                            float dt_ms,
@@ -67,50 +147,42 @@ static inline bool forge_entry_filter_step(forge_entry_transient_filter_t* f,
     f->last_rms = current_rms;
 
     if (f->state == TRANSIENT_STATE_STEADY) {
-        // Track pre-contact baseline during steady cutting
         f->pre_contact_rms = 0.95f * f->pre_contact_rms + 0.05f * current_rms;
 
-        // Detect sharp impact shock
         if (dE_dt > f->dE_dt_threshold) {
             f->state = TRANSIENT_STATE_ARMED;
             f->elapsed_ms = 0.0f;
             f->peak_entry_rms = current_rms;
-            if (out_suppress_trip) *out_suppress_trip = true; // Blank initial 15ms
+            if (out_suppress_trip) *out_suppress_trip = true;
         }
         return false;
-    } else { // TRANSIENT_STATE_ARMED
+    } else {
         f->elapsed_ms += dt_ms;
 
         if (current_rms > f->peak_entry_rms) {
             f->peak_entry_rms = current_rms;
         }
 
-        // Within 15 ms blanking window: suppress nuisance tripping
         if (f->elapsed_ms < 15.0f) {
             if (out_suppress_trip) *out_suppress_trip = true;
             return false;
         }
 
-        // Secondary verification window (15 ms to 30 ms): check ring-down decay
         float residual_ratio = current_rms / (f->pre_contact_rms > 1e-3f ? f->pre_contact_rms : 1.0f);
 
         if (f->elapsed_ms >= 30.0f) {
-            // Evaluated over full 30ms: if energy decayed back to near baseline, reset
             if (residual_ratio < 2.5f) {
                 f->state = TRANSIENT_STATE_STEADY;
-                return false; // Normal workpiece entry confirmed (damped ring-down)
+                return false;
             } else {
-                // Permanent step shift + rubbing: confirmed tip cleavage!
                 f->state = TRANSIENT_STATE_STEADY;
-                return true; // Trip emergency E-stop immediately!
+                return true;
             }
         } else {
-            // Still in 15-30ms verification window:
-            // If energy already dropped back toward baseline, can unblank safely
             if (residual_ratio < 2.0f) {
                 if (out_suppress_trip) *out_suppress_trip = false;
             } else {
-                if (out_suppress_trip) *out_suppress_trip = false; // Allow trip if extreme
+                if (out_suppress_trip) *out_suppress_trip = false;
             }
         }
     }
@@ -118,23 +190,19 @@ static inline bool forge_entry_filter_step(forge_entry_transient_filter_t* f,
 }
 
 // ----------------------------------------------------------------------------
-// 2. Runout-Compensated Generalized Comb Filter (THSR-Comp)
-// Compensates for tool collet Total Indicator Reading (TIR 5-18 um) and flute load asymmetry.
+// 3. Runout-Compensated Generalized Comb Filter (THSR-Comp)
 // ----------------------------------------------------------------------------
 typedef struct {
     float thsr_comp;             // Runout-compensated synchronicity ratio (0.0 - 1.0)
     float rho_runout;            // Runout asymmetry ratio: E(f_rot) / E(f_tooth)
     float e_coherent;            // Tooth + Runout synchronous energy
     float e_async;               // Incommensurate regenerative chatter energy
+    float spectral_centroid_hz;  // Spectral Centroid (Hz)
+    float high_low_ratio;        // Psi_HL (Bands 28-79 vs 0-27)
+    float comb_crest_factor;     // Peak to mean synchronous power
     bool  is_flute_fractured;    // Asymmetry index spike (>300% jump) detection
 } forge_runout_metrics_t;
 
-/**
- * @brief Generalized runout-aware synchronicity calculation.
- * Redefines comb filter over complete integer grid of spindle speed (m * f_rot),
- * incorporating intermediate harmonics into coherent cutting energy to prevent
- * false-positive chatter trips from collet runout.
- */
 static inline forge_runout_metrics_t calculate_thsr_runout_comp(const float* bands_db,
                                                                 float rpm,
                                                                 int flutes,
@@ -152,12 +220,28 @@ static inline forge_runout_metrics_t calculate_thsr_runout_comp(const float* ban
     float e_rot_1x = 0.0f;
     float e_async = 0.0f;
 
+    float sum_freq_pwr = 0.0f;
+    float sum_total_pwr = 0.0f;
+    float e_low = 0.0f;
+    float e_high = 0.0f;
+    float max_sync_pwr = 0.0f;
+    float sum_sync_pwr = 0.0f;
+    int   sync_band_count = 0;
+
     for (int b = 0; b < FORGE_TOTAL_BANDS; b++) {
         float f_center = (b < 10) ? (1.0f + b * 49.9f + 24.95f) : (500.0f + (b - 10) * 278.57f + 139.28f);
         float pwr_linear = powf(10.0f, bands_db[b] / 10.0f);
         float tolerance = (b < 10) ? 25.0f : 140.0f;
 
-        // Check alignment with 1X spindle fundamental
+        sum_freq_pwr += f_center * pwr_linear;
+        sum_total_pwr += pwr_linear;
+
+        if (b < 28) {
+            e_low += pwr_linear;
+        } else {
+            e_high += pwr_linear;
+        }
+
         if (fabsf(f_center - f_rot) <= tolerance) {
             e_rot_1x += pwr_linear;
         }
@@ -165,7 +249,6 @@ static inline forge_runout_metrics_t calculate_thsr_runout_comp(const float* ban
         bool is_tooth_harmonic = false;
         bool is_rot_harmonic = false;
 
-        // Check two-tier synchronous grid: m * f_rot
         int max_m = flutes * 8;
         for (int m = 1; m <= max_m; m++) {
             float harmonic = (float)m * f_rot;
@@ -181,43 +264,53 @@ static inline forge_runout_metrics_t calculate_thsr_runout_comp(const float* ban
 
         if (is_tooth_harmonic) {
             e_tooth += pwr_linear;
+            if (pwr_linear > max_sync_pwr) max_sync_pwr = pwr_linear;
+            sum_sync_pwr += pwr_linear;
+            sync_band_count++;
         } else if (is_rot_harmonic) {
             e_runout += pwr_linear;
+            if (pwr_linear > max_sync_pwr) max_sync_pwr = pwr_linear;
+            sum_sync_pwr += pwr_linear;
+            sync_band_count++;
         } else {
             e_async += pwr_linear;
         }
     }
 
-    // Measure tool asymmetry index rho_runout = E(f_rot) / E(f_tooth)
     metrics.rho_runout = (e_tooth > 1e-6f) ? (e_rot_1x / e_tooth) : 0.0f;
 
-    // Detect broken single flute (abrupt >300% jump in asymmetry index from baseline)
     if (baseline_rho > 0.05f && metrics.rho_runout > (baseline_rho * 3.0f)) {
         metrics.is_flute_fractured = true;
     }
 
-    // Coherent energy incorporates both tooth passage and runout harmonics
     metrics.e_coherent = e_tooth + 1.0f * e_runout;
     metrics.e_async = e_async;
 
     float total = metrics.e_coherent + metrics.e_async;
     metrics.thsr_comp = (total > 1e-9f) ? (metrics.e_coherent / total) : 1.0f;
 
+    // Feature Space for Material Classification
+    metrics.spectral_centroid_hz = (sum_total_pwr > 1e-9f) ? (sum_freq_pwr / sum_total_pwr) : 1000.0f;
+    metrics.high_low_ratio = e_high / (e_low + 1e-9f);
+
+    if (sync_band_count > 0 && sum_sync_pwr > 1e-9f) {
+        float mean_sync = sum_sync_pwr / (float)sync_band_count;
+        metrics.comb_crest_factor = max_sync_pwr / mean_sync;
+    } else {
+        metrics.comb_crest_factor = 1.0f;
+    }
+
     return metrics;
 }
 
-/**
- * 3. Legacy Wrapper for backward compatibility
- */
 static inline float calculate_thsr(const float* bands_db, float rpm, int flutes, float sample_rate, int fft_size) {
     forge_runout_metrics_t m = calculate_thsr_runout_comp(bands_db, rpm, flutes, sample_rate, fft_size, 0.20f);
     return m.thsr_comp;
 }
 
-/**
- * 4. Spectral Entropy (H_spec)
- * Quantifies process damping and frictional rubbing from tool flank wear (VB).
- */
+// ----------------------------------------------------------------------------
+// 4. Spectral Entropy (H_spec)
+// ----------------------------------------------------------------------------
 static inline float calculate_spectral_entropy(const float* bands_db) {
     float pwr[70];
     float sum_pwr = 0.0f;
@@ -237,14 +330,12 @@ static inline float calculate_spectral_entropy(const float* bands_db) {
         }
     }
 
-    // Normalize against ln(70) ~ 4.2485
     return entropy / 4.248495f;
 }
 
-/**
- * 5. Sub-Window Transient Burst Kurtosis (K_burst)
- * Detects impending carbide micro-chipping transients across 16 temporal sub-windows.
- */
+// ----------------------------------------------------------------------------
+// 5. Sub-Window Transient Burst Kurtosis (K_burst)
+// ----------------------------------------------------------------------------
 static inline float calculate_burst_kurtosis(const float* sub_rms, int count) {
     if (count <= 1) return 3.0f;
 
@@ -270,52 +361,56 @@ static inline float calculate_burst_kurtosis(const float* sub_rms, int count) {
     return m4 / (var * var);
 }
 
-/**
- * 6. Autonomous Adaptive Feed-Rate Override (FRO) Transfer Function
- * Closed-loop proportional-integral damping to pull the cutter out of chatter.
- */
+// ----------------------------------------------------------------------------
+// 6. Material-Adaptive Closed-Loop Feed-Rate Override (FRO) Controller
+// ----------------------------------------------------------------------------
 typedef struct {
-    float kp;
-    float ki;
-    float integral;
-    float gamma_ref;   // e.g. 0.70f
-    float fro_current; // 35.0% to 100.0%
+    workpiece_mat_t          material;
+    forge_material_profile_t profile;
+    float                    integral;
+    float                    fro_current; // 25.0% to 100.0%
 } forge_fro_controller_t;
 
 static inline void forge_fro_init(forge_fro_controller_t* c) {
-    c->kp = 45.0f;
-    c->ki = 15.0f;
+    c->material = MAT_UNKNOWN;
+    c->profile = forge_get_material_profile(MAT_UNKNOWN);
     c->integral = 0.0f;
-    c->gamma_ref = 0.70f;
     c->fro_current = 100.0f;
+}
+
+static inline void forge_fro_set_material(forge_fro_controller_t* c, workpiece_mat_t mat) {
+    c->material = mat;
+    c->profile = forge_get_material_profile(mat);
 }
 
 static inline float forge_fro_step(forge_fro_controller_t* c, float gamma, float dt) {
     float err = 0.0f;
-    if (gamma < c->gamma_ref) {
-        err = c->gamma_ref - gamma; // Chatter deficit
+    if (gamma < c->profile.gamma_ref) {
+        err = c->profile.gamma_ref - gamma; // Chatter deficit scaled to material
     }
 
     c->integral += err * dt;
-    // Anti-windup clamping
     if (c->integral > 3.0f) c->integral = 3.0f;
 
-    float delta = (c->kp * err) + (c->ki * c->integral);
+    float delta = (c->profile.kp * err) + (c->profile.ki * c->integral);
     float target_fro = 100.0f - delta;
 
-    // Asymmetric Slew-Rate Limiting:
-    // Drop rapid (-150%/s), recover slow (+15%/s)
+    // Material-tuned Asymmetric Slew-Rate Limiter
     if (target_fro < c->fro_current) {
-        float max_drop = 150.0f * dt;
+        float max_drop = c->profile.slew_down * dt;
         c->fro_current = fmaxf(c->fro_current - max_drop, target_fro);
     } else {
-        float max_rise = 15.0f * dt;
+        float max_rise = c->profile.slew_up * dt;
         c->fro_current = fminf(c->fro_current + max_rise, target_fro);
     }
 
-    // Hard Anti-Rubbing Clamp (35% floor)
-    if (c->fro_current < 35.0f) c->fro_current = 35.0f;
-    if (c->fro_current > 100.0f) c->fro_current = 100.0f;
+    // Material-tuned Anti-Rubbing Floor Clamp (e.g. 40% in Al, 25% in Wood)
+    if (c->fro_current < c->profile.fro_min_floor) {
+        c->fro_current = c->profile.fro_min_floor;
+    }
+    if (c->fro_current > 100.0f) {
+        c->fro_current = 100.0f;
+    }
 
     return c->fro_current;
 }

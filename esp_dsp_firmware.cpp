@@ -221,15 +221,30 @@ void app_main(void) {
             // 2. Full 80-band telemetry decomposition
             process_acoustic_frame(sample_buffer);
 
-            // 3. Tooth-Harmonic Synchronicity Ratio (THSR) & Autonomous FRO
             // 3. Runout-Compensated Comb Filter & Spindle Asymmetry Tracking
             forge_runout_metrics_t runout_m = calculate_thsr_runout_comp(vector_80, 24000.0f, 2, SAMPLE_RATE, FFT_N, 0.20f);
             float gamma = runout_m.thsr_comp;
+
+            // 4. Material Inference in initial 100ms of cut
+            if (fro_ctrl.material == MAT_UNKNOWN) {
+                float h_spec = calculate_spectral_entropy(vector_80);
+                workpiece_mat_t detected_mat = forge_classify_workpiece(
+                    h_spec,
+                    runout_m.spectral_centroid_hz,
+                    runout_m.high_low_ratio,
+                    runout_m.comb_crest_factor
+                );
+                if (detected_mat != MAT_UNKNOWN) {
+                    forge_fro_set_material(&fro_ctrl, detected_mat);
+                }
+            }
+
+            // 5. Material-Tuned Autonomous Closed-Loop FRO
             float fro_override = forge_fro_step(&fro_ctrl, gamma, 0.04267f);
 
-            // If chatter causes severe destabilization (Gamma < 0.45), trip hardware defense
-            // If true chatter destabilizes or single-flute cleavage detected (Gamma < 0.45 or Flute Fractured)
-            if (gamma < 0.45f || runout_m.is_flute_fractured || evaluate_chatter_resonance(vector_80)) {
+            // Trip emergency defense if below material stability boundary or single-flute cleavage detected
+            float chatter_boundary = fro_ctrl.profile.gamma_ref - 0.25f;
+            if (gamma < chatter_boundary || runout_m.is_flute_fractured || evaluate_chatter_resonance(vector_80)) {
                 gpio_set_level((gpio_num_t)EMERGENCY_PIN, 1);
             }
         }
