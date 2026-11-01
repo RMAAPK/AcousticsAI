@@ -2,6 +2,7 @@
 #define FORGE_STABILITY_HEURISTICS_HPP
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <math.h>
 #include <string.h>
 
@@ -17,55 +18,204 @@ typedef enum {
     TOOL_STATE_HEALTHY     = 0,
     TOOL_STATE_BREAK_IN    = 1,
     TOOL_STATE_FLANK_WORN  = 2,  // VB > 0.2mm: Schedule tool change at pass completion
-    TOOL_STATE_CHIPPING    = 3   // Micro-cracking: Immediate feed override / retract
+    TOOL_STATE_CHIPPING    = 3,  // Micro-cracking: Immediate feed override / retract
+    TOOL_STATE_CLEAVAGE    = 4   // Catastrophic tip fracture: Immediate emergency E-stop
 } tool_condition_t;
 
+typedef enum {
+    TRANSIENT_STATE_STEADY    = 0,
+    TRANSIENT_STATE_ARMED     = 1   // Temporal blanking window (<15ms)
+} entry_transient_state_t;
+
+// ----------------------------------------------------------------------------
+// 1. Entry Shock & Plunge Transient Filter
+// Separates self-limiting workpiece entry shock from brittle carbide tip cleavage.
+// ----------------------------------------------------------------------------
+typedef struct {
+    entry_transient_state_t state;
+    float pre_contact_rms;       // Baseline RMS prior to impact
+    float elapsed_ms;            // Timer in armed transient state
+    float peak_entry_rms;        // Peak registered during shock
+    float dE_dt_threshold;       // Derivative threshold to detect plunge (e.g. 5000.0f)
+    float last_rms;
+} forge_entry_transient_filter_t;
+
+static inline void forge_entry_filter_init(forge_entry_transient_filter_t* f) {
+    f->state = TRANSIENT_STATE_STEADY;
+    f->pre_contact_rms = 100.0f;
+    f->elapsed_ms = 0.0f;
+    f->peak_entry_rms = 0.0f;
+    f->dE_dt_threshold = 5000.0f;
+    f->last_rms = 100.0f;
+}
+
 /**
- * 1. Tooth-Harmonic Synchronicity Ratio (THSR - Γ)
- * Differentiates stable high-load cuts (dense wood knots) from regenerative chatter.
- *
- * @param bands_db Array of 80 dB acoustic power bands
- * @param rpm Current spindle speed (e.g. 18000 - 24000)
- * @param flutes Number of cutter teeth (Z = 2, 3, or 4)
- * @param sample_rate Sampling rate (48000 Hz)
- * @param fft_size FFT length (2048)
- * @return Gamma ratio: > 0.80 = Stable forced cut | < 0.45 = Regenerative chatter
+ * @brief Evaluates whether a high-energy RMS spike is a normal plunge or tip fracture.
+ * @param f Filter state
+ * @param current_rms Sub-window RMS energy
+ * @param dt_ms Time step in milliseconds (e.g. 1.33 ms for 64 samples at 48kHz)
+ * @param out_suppress_trip Pointer returning true if E-stop should be temporarily blanked
+ * @return True if catastrophic carbide tip cleavage is verified; False if normal plunge/steady
  */
-static inline float calculate_thsr(const float* bands_db, float rpm, int flutes, float sample_rate, int fft_size) {
-    float f_tooth = (rpm * (float)flutes) / 60.0f;
-    float hz_per_bin = sample_rate / (float)fft_size;
-    float e_sync = 0.0f;
+static inline bool forge_entry_filter_step(forge_entry_transient_filter_t* f,
+                                           float current_rms,
+                                           float dt_ms,
+                                           bool* out_suppress_trip) {
+    if (out_suppress_trip) *out_suppress_trip = false;
+
+    float dE_dt = (current_rms - f->last_rms) / (dt_ms > 0.0f ? dt_ms : 1.0f);
+    f->last_rms = current_rms;
+
+    if (f->state == TRANSIENT_STATE_STEADY) {
+        // Track pre-contact baseline during steady cutting
+        f->pre_contact_rms = 0.95f * f->pre_contact_rms + 0.05f * current_rms;
+
+        // Detect sharp impact shock
+        if (dE_dt > f->dE_dt_threshold) {
+            f->state = TRANSIENT_STATE_ARMED;
+            f->elapsed_ms = 0.0f;
+            f->peak_entry_rms = current_rms;
+            if (out_suppress_trip) *out_suppress_trip = true; // Blank initial 15ms
+        }
+        return false;
+    } else { // TRANSIENT_STATE_ARMED
+        f->elapsed_ms += dt_ms;
+
+        if (current_rms > f->peak_entry_rms) {
+            f->peak_entry_rms = current_rms;
+        }
+
+        // Within 15 ms blanking window: suppress nuisance tripping
+        if (f->elapsed_ms < 15.0f) {
+            if (out_suppress_trip) *out_suppress_trip = true;
+            return false;
+        }
+
+        // Secondary verification window (15 ms to 30 ms): check ring-down decay
+        float residual_ratio = current_rms / (f->pre_contact_rms > 1e-3f ? f->pre_contact_rms : 1.0f);
+
+        if (f->elapsed_ms >= 30.0f) {
+            // Evaluated over full 30ms: if energy decayed back to near baseline, reset
+            if (residual_ratio < 2.5f) {
+                f->state = TRANSIENT_STATE_STEADY;
+                return false; // Normal workpiece entry confirmed (damped ring-down)
+            } else {
+                // Permanent step shift + rubbing: confirmed tip cleavage!
+                f->state = TRANSIENT_STATE_STEADY;
+                return true; // Trip emergency E-stop immediately!
+            }
+        } else {
+            // Still in 15-30ms verification window:
+            // If energy already dropped back toward baseline, can unblank safely
+            if (residual_ratio < 2.0f) {
+                if (out_suppress_trip) *out_suppress_trip = false;
+            } else {
+                if (out_suppress_trip) *out_suppress_trip = false; // Allow trip if extreme
+            }
+        }
+    }
+    return false;
+}
+
+// ----------------------------------------------------------------------------
+// 2. Runout-Compensated Generalized Comb Filter (THSR-Comp)
+// Compensates for tool collet Total Indicator Reading (TIR 5-18 um) and flute load asymmetry.
+// ----------------------------------------------------------------------------
+typedef struct {
+    float thsr_comp;             // Runout-compensated synchronicity ratio (0.0 - 1.0)
+    float rho_runout;            // Runout asymmetry ratio: E(f_rot) / E(f_tooth)
+    float e_coherent;            // Tooth + Runout synchronous energy
+    float e_async;               // Incommensurate regenerative chatter energy
+    bool  is_flute_fractured;    // Asymmetry index spike (>300% jump) detection
+} forge_runout_metrics_t;
+
+/**
+ * @brief Generalized runout-aware synchronicity calculation.
+ * Redefines comb filter over complete integer grid of spindle speed (m * f_rot),
+ * incorporating intermediate harmonics into coherent cutting energy to prevent
+ * false-positive chatter trips from collet runout.
+ */
+static inline forge_runout_metrics_t calculate_thsr_runout_comp(const float* bands_db,
+                                                                float rpm,
+                                                                int flutes,
+                                                                float sample_rate,
+                                                                int fft_size,
+                                                                float baseline_rho) {
+    forge_runout_metrics_t metrics;
+    memset(&metrics, 0, sizeof(metrics));
+
+    float f_rot = rpm / 60.0f;
+    float f_tooth = f_rot * (float)flutes;
+
+    float e_tooth = 0.0f;
+    float e_runout = 0.0f;
+    float e_rot_1x = 0.0f;
     float e_async = 0.0f;
 
     for (int b = 0; b < FORGE_TOTAL_BANDS; b++) {
         float f_center = (b < 10) ? (1.0f + b * 49.9f + 24.95f) : (500.0f + (b - 10) * 278.57f + 139.28f);
         float pwr_linear = powf(10.0f, bands_db[b] / 10.0f);
+        float tolerance = (b < 10) ? 25.0f : 140.0f;
 
-        // Check if band aligns with any tooth harmonic k * f_tooth
-        bool is_sync = false;
-        for (int k = 1; k <= 8; k++) {
-            float harmonic = (float)k * f_tooth;
-            float tolerance = (b < 10) ? 25.0f : 140.0f;
+        // Check alignment with 1X spindle fundamental
+        if (fabsf(f_center - f_rot) <= tolerance) {
+            e_rot_1x += pwr_linear;
+        }
+
+        bool is_tooth_harmonic = false;
+        bool is_rot_harmonic = false;
+
+        // Check two-tier synchronous grid: m * f_rot
+        int max_m = flutes * 8;
+        for (int m = 1; m <= max_m; m++) {
+            float harmonic = (float)m * f_rot;
             if (fabsf(f_center - harmonic) <= tolerance) {
-                is_sync = true;
+                if (m % flutes == 0) {
+                    is_tooth_harmonic = true;
+                } else {
+                    is_rot_harmonic = true;
+                }
                 break;
             }
         }
 
-        if (is_sync) {
-            e_sync += pwr_linear;
+        if (is_tooth_harmonic) {
+            e_tooth += pwr_linear;
+        } else if (is_rot_harmonic) {
+            e_runout += pwr_linear;
         } else {
             e_async += pwr_linear;
         }
     }
 
-    float total = e_sync + e_async;
-    if (total <= 1e-9f) return 1.0f;
-    return e_sync / total;
+    // Measure tool asymmetry index rho_runout = E(f_rot) / E(f_tooth)
+    metrics.rho_runout = (e_tooth > 1e-6f) ? (e_rot_1x / e_tooth) : 0.0f;
+
+    // Detect broken single flute (abrupt >300% jump in asymmetry index from baseline)
+    if (baseline_rho > 0.05f && metrics.rho_runout > (baseline_rho * 3.0f)) {
+        metrics.is_flute_fractured = true;
+    }
+
+    // Coherent energy incorporates both tooth passage and runout harmonics
+    metrics.e_coherent = e_tooth + 1.0f * e_runout;
+    metrics.e_async = e_async;
+
+    float total = metrics.e_coherent + metrics.e_async;
+    metrics.thsr_comp = (total > 1e-9f) ? (metrics.e_coherent / total) : 1.0f;
+
+    return metrics;
 }
 
 /**
- * 2. Spectral Entropy (H_spec)
+ * 3. Legacy Wrapper for backward compatibility
+ */
+static inline float calculate_thsr(const float* bands_db, float rpm, int flutes, float sample_rate, int fft_size) {
+    forge_runout_metrics_t m = calculate_thsr_runout_comp(bands_db, rpm, flutes, sample_rate, fft_size, 0.20f);
+    return m.thsr_comp;
+}
+
+/**
+ * 4. Spectral Entropy (H_spec)
  * Quantifies process damping and frictional rubbing from tool flank wear (VB).
  */
 static inline float calculate_spectral_entropy(const float* bands_db) {
@@ -92,7 +242,7 @@ static inline float calculate_spectral_entropy(const float* bands_db) {
 }
 
 /**
- * 3. Sub-Window Transient Burst Kurtosis (K_burst)
+ * 5. Sub-Window Transient Burst Kurtosis (K_burst)
  * Detects impending carbide micro-chipping transients across 16 temporal sub-windows.
  */
 static inline float calculate_burst_kurtosis(const float* sub_rms, int count) {
@@ -121,7 +271,7 @@ static inline float calculate_burst_kurtosis(const float* sub_rms, int count) {
 }
 
 /**
- * 4. Autonomous Adaptive Feed-Rate Override (FRO) Transfer Function
+ * 6. Autonomous Adaptive Feed-Rate Override (FRO) Transfer Function
  * Closed-loop proportional-integral damping to pull the cutter out of chatter.
  */
 typedef struct {

@@ -202,6 +202,8 @@ void app_main(void) {
     
     init_i2s_dma();
     forge_fro_controller_t fro_ctrl;
+    forge_entry_transient_filter_t entry_filter;
+    forge_entry_filter_init(&entry_filter);
     forge_fro_init(&fro_ctrl);
     int16_t sample_buffer[FFT_N];
 
@@ -220,11 +222,14 @@ void app_main(void) {
             process_acoustic_frame(sample_buffer);
 
             // 3. Tooth-Harmonic Synchronicity Ratio (THSR) & Autonomous FRO
-            float gamma = calculate_thsr(vector_80, 24000.0f, 2, SAMPLE_RATE, FFT_N);
+            // 3. Runout-Compensated Comb Filter & Spindle Asymmetry Tracking
+            forge_runout_metrics_t runout_m = calculate_thsr_runout_comp(vector_80, 24000.0f, 2, SAMPLE_RATE, FFT_N, 0.20f);
+            float gamma = runout_m.thsr_comp;
             float fro_override = forge_fro_step(&fro_ctrl, gamma, 0.04267f);
 
             // If chatter causes severe destabilization (Gamma < 0.45), trip hardware defense
-            if (gamma < 0.45f || evaluate_chatter_resonance(vector_80)) {
+            // If true chatter destabilizes or single-flute cleavage detected (Gamma < 0.45 or Flute Fractured)
+            if (gamma < 0.45f || runout_m.is_flute_fractured || evaluate_chatter_resonance(vector_80)) {
                 gpio_set_level((gpio_num_t)EMERGENCY_PIN, 1);
             }
         }
