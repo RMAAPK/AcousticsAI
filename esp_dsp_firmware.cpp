@@ -7,6 +7,7 @@
 #include "driver/i2s_std.h"
 #include "esp_dsp.h"
 #include "mbedtls/ed25519.h"
+#include "include/forge_stability_heuristics.hpp"
 
 // --- CONFIGURATION ---
 #define SAMPLE_RATE         48000
@@ -199,6 +200,8 @@ void app_main(void) {
     dsps_fft2r_init_fc32(NULL, CONFIG_DSP_MAX_FFT_SIZE);
     
     init_i2s_dma();
+    forge_fro_controller_t fro_ctrl;
+    forge_fro_init(&fro_ctrl);
     int16_t sample_buffer[FFT_N];
 
     while (1) {
@@ -215,9 +218,12 @@ void app_main(void) {
             // 2. Full 80-band telemetry decomposition
             process_acoustic_frame(sample_buffer);
 
-            // 3. Spectral Peak Crest Factor Check (Regenerative Chatter Onset)
-            if (evaluate_chatter_resonance(vector_80)) {
-                // Trip emergency feed-hold optocoupler before tool chipping occurs
+            // 3. Tooth-Harmonic Synchronicity Ratio (THSR) & Autonomous FRO
+            float gamma = calculate_thsr(vector_80, 24000.0f, 2, SAMPLE_RATE, FFT_N);
+            float fro_override = forge_fro_step(&fro_ctrl, gamma, 0.04267f);
+
+            // If chatter causes severe destabilization (Gamma < 0.45), trip hardware defense
+            if (gamma < 0.45f || evaluate_chatter_resonance(vector_80)) {
                 gpio_set_level((gpio_num_t)EMERGENCY_PIN, 1);
             }
         }
