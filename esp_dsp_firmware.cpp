@@ -13,6 +13,11 @@
 #define FFT_N               2048
 #define I2S_PORT            I2S_NUM_0
 
+// Chatter Modal Peak & Crest Factor Tracking
+#define CHATTER_START_BAND  10     // 500 Hz
+#define CHATTER_END_BAND    79     // 20,000 Hz
+#define CREST_FACTOR_THRESH 4.5f   // Narrow-band resonance peak vs floor ratio
+
 // Fast Low-Latency Sub-Window for Emergency E-Stop (< 2.0 ms)
 #define FAST_WINDOW_N       64     // 64 samples @ 48kHz = 1.33 ms observation
 #define EMERGENCY_PIN       18     // GPIO mapped to PC817 Optocoupler (Active High)
@@ -154,7 +159,40 @@ bool verify_lease(const unsigned char* signature_64b, const unsigned char* paylo
 }
 
 // ---------------------------------------------------------
-// 4. Main RTOS Loop
+// 4. Regenerative Chatter & Modal Resonance Detection
+// ---------------------------------------------------------
+// Evaluates spectral peak concentration (Crest Factor) across the 500-20,000 Hz zone
+// to distinguish narrow-band regenerative chatter spikes from wideband chip-cutting noise.
+bool evaluate_chatter_resonance(const float* bands) {
+    float max_chatter_pwr = -100.0f;
+    float sum_chatter_pwr = 0.0f;
+    int count = 0;
+
+    for (int b = CHATTER_START_BAND; b <= CHATTER_END_BAND; b++) {
+        if (bands[b] > -90.0f) {
+            float pwr = bands[b];
+            if (pwr > max_chatter_pwr) {
+                max_chatter_pwr = pwr;
+            }
+            sum_chatter_pwr += pwr;
+            count++;
+        }
+    }
+
+    if (count > 0) {
+        float mean_chatter_pwr = sum_chatter_pwr / (float)count;
+        float crest_factor = max_chatter_pwr - mean_chatter_pwr; // in dB
+        
+        // If narrow-band peak exceeds local average floor by > 12 dB (4.0x power ratio)
+        if (crest_factor > 12.0f && max_chatter_pwr > -30.0f) {
+            return true; // Resonant chatter detected!
+        }
+    }
+    return false;
+}
+
+// ---------------------------------------------------------
+// 5. Main RTOS Loop
 // ---------------------------------------------------------
 void app_main(void) {
     // Initialize DSP module
@@ -168,12 +206,20 @@ void app_main(void) {
         // Read directly from DMA ring buffer. Ping-pong allows seamless ingestion.
         i2s_channel_read(rx_handle, sample_buffer, sizeof(sample_buffer), &bytes_read, portMAX_DELAY);
         
+
+
         if (bytes_read == sizeof(sample_buffer)) {
-            // Fast sub-window transient overload check (< 1.5ms reaction)
+            // 1. Fast sub-window transient overload check (< 1.5ms reaction)
             check_fast_transient_overload(sample_buffer, FAST_WINDOW_N);
 
-            // Full 80-band telemetry decomposition
+            // 2. Full 80-band telemetry decomposition
             process_acoustic_frame(sample_buffer);
+
+            // 3. Spectral Peak Crest Factor Check (Regenerative Chatter Onset)
+            if (evaluate_chatter_resonance(vector_80)) {
+                // Trip emergency feed-hold optocoupler before tool chipping occurs
+                gpio_set_level((gpio_num_t)EMERGENCY_PIN, 1);
+            }
         }
     }
 }
