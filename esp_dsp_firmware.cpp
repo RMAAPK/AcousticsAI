@@ -203,7 +203,9 @@ void app_main(void) {
     init_i2s_dma();
     forge_fro_controller_t fro_ctrl;
     forge_entry_transient_filter_t entry_filter;
+    forge_kinematic_gate_t kin_gate;
     forge_entry_filter_init(&entry_filter);
+    forge_kinematic_gate_init(&kin_gate, 250.0f); // 250W tare power baseline
     forge_fro_init(&fro_ctrl);
     int16_t sample_buffer[FFT_N];
 
@@ -239,13 +241,31 @@ void app_main(void) {
                 }
             }
 
-            // 5. Material-Tuned Autonomous Closed-Loop FRO
-            float fro_override = forge_fro_step(&fro_ctrl, gamma, 0.04267f);
+            // 5. Kinematic G0 Transit & Air-Cutting State Evaluation
+            // Spindle VFD power read via Modbus register (simulated/polled: 420W in cut, 260W air)
+            float vfd_pwr_watts = 420.0f;
+            float ambient_rms = 100.0f;
+            bool is_in_solid_cut = forge_kinematic_gate_step(
+                &kin_gate, 
+                vfd_pwr_watts, 
+                runout_m.tooth_energy, 
+                ambient_rms, 
+                runout_m.dominant_peak_freq, 
+                0.04267f
+            );
 
-            // Trip emergency defense if below material stability boundary or single-flute cleavage detected
-            float chatter_boundary = fro_ctrl.profile.gamma_ref - 0.25f;
-            if (gamma < chatter_boundary || runout_m.is_flute_fractured || evaluate_chatter_resonance(vector_80)) {
-                gpio_set_level((gpio_num_t)EMERGENCY_PIN, 1);
+            // 6. Material-Tuned Autonomous Closed-Loop FRO & Emergency Interlock
+            if (is_in_solid_cut) {
+                float fro_override = forge_fro_step(&fro_ctrl, gamma, 0.04267f);
+
+                // Trip emergency defense if below material stability boundary or single-flute cleavage detected
+                float chatter_boundary = fro_ctrl.profile.gamma_ref - 0.25f;
+                if (gamma < chatter_boundary || runout_m.is_flute_fractured || evaluate_chatter_resonance(vector_80)) {
+                    gpio_set_level((gpio_num_t)EMERGENCY_PIN, 1);
+                }
+            } else {
+                // In Air-Cutting or G0 Rapid Transit: Mute alarms, freeze FRO at 100%
+                fro_ctrl.fro_current = 100.0f;
             }
         }
     }

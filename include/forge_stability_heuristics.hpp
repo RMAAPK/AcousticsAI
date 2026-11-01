@@ -27,6 +27,14 @@ typedef enum {
     TRANSIENT_STATE_ARMED     = 1   // Temporal blanking window (<15ms)
 } entry_transient_state_t;
 
+// Machine Kinematic & Loading State
+typedef enum {
+    MACHINE_STATE_AIR_CUTTING  = 0, // Zero load (<30W, tooth harmonic below floor): MUTE / STANDBY
+    MACHINE_STATE_G0_TRANSIT   = 1, // Rapid positioning with high df/dt (>1kHz/frame): MUTE FRO
+    MACHINE_STATE_IN_CUT       = 2, // Active solid mechanical cutting (delta_P > 30W): ARMED
+    MACHINE_STATE_CROSS_TALK   = 3  // Multi-spindle interference detected: NOTCH FILTERED
+} machine_kinematic_state_t;
+
 // ----------------------------------------------------------------------------
 // 1. Workpiece Material Classification & Adaptive Profiles
 // Autonomous inference within first 100ms of steady engagement
@@ -92,23 +100,16 @@ static inline forge_material_profile_t forge_get_material_profile(workpiece_mat_
     return p;
 }
 
-/**
- * @brief Autonomous Material Classification Heuristic within 100ms.
- * Evaluates spectral entropy, spectral centroid, high-to-low energy ratio, and comb crest.
- */
 static inline workpiece_mat_t forge_classify_workpiece(float h_spec,
                                                        float c_spec,
                                                        float psi_hl,
                                                        float cf_comb) {
-    // Aluminum 6061-T6: Dominant comb peaks, low broadband entropy, high comb crest
     if (h_spec < 0.48f && cf_comb > 5.5f && psi_hl < 1.2f) {
         return MAT_ALUMINUM;
     }
-    // 360 Free-Cutting Brass: Discontinuous chip fracture elevates high-frequency hiss
     if (h_spec >= 0.70f && c_spec > 6500.0f && psi_hl >= 2.0f) {
         return MAT_BRASS;
     }
-    // Hardwood/Dense MDF: High internal cellular damping, mid-band acoustic hump
     if (h_spec >= 0.48f && h_spec < 0.72f && c_spec <= 6500.0f) {
         return MAT_WOOD_MDF;
     }
@@ -116,15 +117,72 @@ static inline workpiece_mat_t forge_classify_workpiece(float h_spec,
 }
 
 // ----------------------------------------------------------------------------
-// 2. Entry Shock & Plunge Transient Filter
-// Separates self-limiting workpiece entry shock from brittle carbide tip cleavage.
+// 2. Kinematic G0 Transit & Air-Cutting State Detector
+// ----------------------------------------------------------------------------
+typedef struct {
+    float last_peak_freq;
+    float tare_power_watts;     // Baseline spindle idle power P_tare(RPM)
+    machine_kinematic_state_t state;
+} forge_kinematic_gate_t;
+
+static inline void forge_kinematic_gate_init(forge_kinematic_gate_t* g, float tare_power_watts) {
+    g->last_peak_freq = 0.0f;
+    g->tare_power_watts = tare_power_watts;
+    g->state = MACHINE_STATE_AIR_CUTTING;
+}
+
+/**
+ * @brief Evaluates whether machine is cutting stock, air cutting, or performing rapid G0 transit.
+ * @param g Gate tracker state
+ * @param vfd_active_power Total power read from VFD Modbus register (Watts)
+ * @param tooth_energy Acoustic energy at fundamental tooth-pass frequency
+ * @param ambient_energy Background acoustic energy baseline
+ * @param dominant_peak_freq Peak acoustic frequency in current 42.67ms frame (Hz)
+ * @param dt_frame_sec Elapsed frame time (0.04267s)
+ * @return True if system is in solid mechanical cut (Armed); False if Muted/Standby
+ */
+static inline bool forge_kinematic_gate_step(forge_kinematic_gate_t* g,
+                                             float vfd_active_power,
+                                             float tooth_energy,
+                                             float ambient_energy,
+                                             float dominant_peak_freq,
+                                             float dt_frame_sec) {
+    float delta_p = vfd_active_power - g->tare_power_watts;
+    float tooth_snr_db = 10.0f * log10f((tooth_energy + 1e-9f) / (ambient_energy + 1e-9f));
+
+    // Calculate frequency chirp rate df/dt (only after first baseline frame)
+    float df_dt = 0.0f;
+    if (g->last_peak_freq > 0.0f) {
+        df_dt = fabsf(dominant_peak_freq - g->last_peak_freq) / (dt_frame_sec > 0.0f ? dt_frame_sec : 0.04267f);
+    }
+    g->last_peak_freq = dominant_peak_freq;
+
+    // Check 1: Ball-Screw Rapid Transit Chirp (G0 move: df/dt > 1000 Hz/frame ~ 23.4 kHz/s)
+    if (df_dt > 20000.0f && delta_p < 40.0f) {
+        g->state = MACHINE_STATE_G0_TRANSIT;
+        return false; // MUTE
+    }
+
+    // Check 2: Air Cutting Gate (No mechanical resistance: delta_p < 30W or low tooth impact)
+    if (delta_p < 30.0f || tooth_snr_db < 6.0f) {
+        g->state = MACHINE_STATE_AIR_CUTTING;
+        return false; // STANDBY
+    }
+
+    // Solid Mechanical In-Cut State
+    g->state = MACHINE_STATE_IN_CUT;
+    return true; // ARMED
+}
+
+// ----------------------------------------------------------------------------
+// 3. Entry Shock & Plunge Transient Filter
 // ----------------------------------------------------------------------------
 typedef struct {
     entry_transient_state_t state;
-    float pre_contact_rms;       // Baseline RMS prior to impact
-    float elapsed_ms;            // Timer in armed transient state
-    float peak_entry_rms;        // Peak registered during shock
-    float dE_dt_threshold;       // Derivative threshold to detect plunge (e.g. 5000.0f)
+    float pre_contact_rms;
+    float elapsed_ms;
+    float peak_entry_rms;
+    float dE_dt_threshold;
     float last_rms;
 } forge_entry_transient_filter_t;
 
@@ -190,7 +248,7 @@ static inline bool forge_entry_filter_step(forge_entry_transient_filter_t* f,
 }
 
 // ----------------------------------------------------------------------------
-// 3. Runout-Compensated Generalized Comb Filter (THSR-Comp)
+// 4. Runout & Multi-Spindle Cross-Talk Compensated Comb Filter
 // ----------------------------------------------------------------------------
 typedef struct {
     float thsr_comp;             // Runout-compensated synchronicity ratio (0.0 - 1.0)
@@ -200,20 +258,28 @@ typedef struct {
     float spectral_centroid_hz;  // Spectral Centroid (Hz)
     float high_low_ratio;        // Psi_HL (Bands 28-79 vs 0-27)
     float comb_crest_factor;     // Peak to mean synchronous power
+    float dominant_peak_freq;    // Frequency of highest peak (for Doppler df/dt tracking)
+    float tooth_energy;          // Energy strictly at tooth pass frequency
     bool  is_flute_fractured;    // Asymmetry index spike (>300% jump) detection
 } forge_runout_metrics_t;
 
-static inline forge_runout_metrics_t calculate_thsr_runout_comp(const float* bands_db,
-                                                                float rpm,
-                                                                int flutes,
-                                                                float sample_rate,
-                                                                int fft_size,
-                                                                float baseline_rho) {
+/**
+ * @brief Generalized runout and multi-spindle cross-talk aware comb filter.
+ * Notches out adjacent spindle harmonics (rpm_spindle2) from asynchronous chatter budget.
+ */
+static inline forge_runout_metrics_t calculate_thsr_runout_comp_ex(const float* bands_db,
+                                                                   float rpm,
+                                                                   int flutes,
+                                                                   float rpm_spindle2,
+                                                                   float sample_rate,
+                                                                   int fft_size,
+                                                                   float baseline_rho) {
     forge_runout_metrics_t metrics;
     memset(&metrics, 0, sizeof(metrics));
 
     float f_rot = rpm / 60.0f;
     float f_tooth = f_rot * (float)flutes;
+    float f_rot2 = rpm_spindle2 > 0.0f ? (rpm_spindle2 / 60.0f) : 0.0f;
 
     float e_tooth = 0.0f;
     float e_runout = 0.0f;
@@ -228,10 +294,18 @@ static inline forge_runout_metrics_t calculate_thsr_runout_comp(const float* ban
     float sum_sync_pwr = 0.0f;
     int   sync_band_count = 0;
 
+    float max_any_pwr = 0.0f;
+    float max_any_freq = 0.0f;
+
     for (int b = 0; b < FORGE_TOTAL_BANDS; b++) {
         float f_center = (b < 10) ? (1.0f + b * 49.9f + 24.95f) : (500.0f + (b - 10) * 278.57f + 139.28f);
         float pwr_linear = powf(10.0f, bands_db[b] / 10.0f);
         float tolerance = (b < 10) ? 25.0f : 140.0f;
+
+        if (pwr_linear > max_any_pwr) {
+            max_any_pwr = pwr_linear;
+            max_any_freq = f_center;
+        }
 
         sum_freq_pwr += f_center * pwr_linear;
         sum_total_pwr += pwr_linear;
@@ -245,10 +319,15 @@ static inline forge_runout_metrics_t calculate_thsr_runout_comp(const float* ban
         if (fabsf(f_center - f_rot) <= tolerance) {
             e_rot_1x += pwr_linear;
         }
+        if (fabsf(f_center - f_tooth) <= tolerance) {
+            metrics.tooth_energy += pwr_linear;
+        }
 
         bool is_tooth_harmonic = false;
         bool is_rot_harmonic = false;
+        bool is_adjacent_spindle = false;
 
+        // Check local spindle grid
         int max_m = flutes * 8;
         for (int m = 1; m <= max_m; m++) {
             float harmonic = (float)m * f_rot;
@@ -262,6 +341,17 @@ static inline forge_runout_metrics_t calculate_thsr_runout_comp(const float* ban
             }
         }
 
+        // Check adjacent spindle cross-talk grid: n * f_rot2
+        if (!is_tooth_harmonic && !is_rot_harmonic && f_rot2 > 10.0f) {
+            for (int n = 1; n <= 16; n++) {
+                float harmonic2 = (float)n * f_rot2;
+                if (fabsf(f_center - harmonic2) <= tolerance) {
+                    is_adjacent_spindle = true;
+                    break;
+                }
+            }
+        }
+
         if (is_tooth_harmonic) {
             e_tooth += pwr_linear;
             if (pwr_linear > max_sync_pwr) max_sync_pwr = pwr_linear;
@@ -272,11 +362,15 @@ static inline forge_runout_metrics_t calculate_thsr_runout_comp(const float* ban
             if (pwr_linear > max_sync_pwr) max_sync_pwr = pwr_linear;
             sum_sync_pwr += pwr_linear;
             sync_band_count++;
+        } else if (is_adjacent_spindle) {
+            // NOTCH OUT adjacent spindle cross-talk from chatter residue!
+            // Structural vibration from second head rejected.
         } else {
             e_async += pwr_linear;
         }
     }
 
+    metrics.dominant_peak_freq = max_any_freq;
     metrics.rho_runout = (e_tooth > 1e-6f) ? (e_rot_1x / e_tooth) : 0.0f;
 
     if (baseline_rho > 0.05f && metrics.rho_runout > (baseline_rho * 3.0f)) {
@@ -289,7 +383,6 @@ static inline forge_runout_metrics_t calculate_thsr_runout_comp(const float* ban
     float total = metrics.e_coherent + metrics.e_async;
     metrics.thsr_comp = (total > 1e-9f) ? (metrics.e_coherent / total) : 1.0f;
 
-    // Feature Space for Material Classification
     metrics.spectral_centroid_hz = (sum_total_pwr > 1e-9f) ? (sum_freq_pwr / sum_total_pwr) : 1000.0f;
     metrics.high_low_ratio = e_high / (e_low + 1e-9f);
 
@@ -303,13 +396,22 @@ static inline forge_runout_metrics_t calculate_thsr_runout_comp(const float* ban
     return metrics;
 }
 
+static inline forge_runout_metrics_t calculate_thsr_runout_comp(const float* bands_db,
+                                                                float rpm,
+                                                                int flutes,
+                                                                float sample_rate,
+                                                                int fft_size,
+                                                                float baseline_rho) {
+    return calculate_thsr_runout_comp_ex(bands_db, rpm, flutes, 0.0f, sample_rate, fft_size, baseline_rho);
+}
+
 static inline float calculate_thsr(const float* bands_db, float rpm, int flutes, float sample_rate, int fft_size) {
     forge_runout_metrics_t m = calculate_thsr_runout_comp(bands_db, rpm, flutes, sample_rate, fft_size, 0.20f);
     return m.thsr_comp;
 }
 
 // ----------------------------------------------------------------------------
-// 4. Spectral Entropy (H_spec)
+// 5. Spectral Entropy (H_spec)
 // ----------------------------------------------------------------------------
 static inline float calculate_spectral_entropy(const float* bands_db) {
     float pwr[70];
@@ -334,7 +436,7 @@ static inline float calculate_spectral_entropy(const float* bands_db) {
 }
 
 // ----------------------------------------------------------------------------
-// 5. Sub-Window Transient Burst Kurtosis (K_burst)
+// 6. Sub-Window Transient Burst Kurtosis (K_burst)
 // ----------------------------------------------------------------------------
 static inline float calculate_burst_kurtosis(const float* sub_rms, int count) {
     if (count <= 1) return 3.0f;
@@ -362,7 +464,7 @@ static inline float calculate_burst_kurtosis(const float* sub_rms, int count) {
 }
 
 // ----------------------------------------------------------------------------
-// 6. Material-Adaptive Closed-Loop Feed-Rate Override (FRO) Controller
+// 7. Material-Adaptive Closed-Loop Feed-Rate Override (FRO) Controller
 // ----------------------------------------------------------------------------
 typedef struct {
     workpiece_mat_t          material;
@@ -395,7 +497,6 @@ static inline float forge_fro_step(forge_fro_controller_t* c, float gamma, float
     float delta = (c->profile.kp * err) + (c->profile.ki * c->integral);
     float target_fro = 100.0f - delta;
 
-    // Material-tuned Asymmetric Slew-Rate Limiter
     if (target_fro < c->fro_current) {
         float max_drop = c->profile.slew_down * dt;
         c->fro_current = fmaxf(c->fro_current - max_drop, target_fro);
@@ -404,7 +505,6 @@ static inline float forge_fro_step(forge_fro_controller_t* c, float gamma, float
         c->fro_current = fminf(c->fro_current + max_rise, target_fro);
     }
 
-    // Material-tuned Anti-Rubbing Floor Clamp (e.g. 40% in Al, 25% in Wood)
     if (c->fro_current < c->profile.fro_min_floor) {
         c->fro_current = c->profile.fro_min_floor;
     }
