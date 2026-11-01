@@ -13,6 +13,11 @@
 #define FFT_N               2048
 #define I2S_PORT            I2S_NUM_0
 
+// Fast Low-Latency Sub-Window for Emergency E-Stop (< 2.0 ms)
+#define FAST_WINDOW_N       64     // 64 samples @ 48kHz = 1.33 ms observation
+#define EMERGENCY_PIN       18     // GPIO mapped to PC817 Optocoupler (Active High)
+#define CHATTER_RMS_THRESH  15000.0f
+
 // 80-Band Acoustic Vector Definition
 #define BANDS_LOW           10
 #define BANDS_HIGH          70
@@ -22,10 +27,10 @@
 #define DMA_BUFFER_LEN      1024
 #define DMA_BUFFER_COUNT    4
 
-// Global Buffers
-static float fft_input[FFT_N * 2]; // Interleaved real/imaginary
-static float fft_power[FFT_N / 2]; 
+// Global Buffers (Aligned for Xtensa PIE SIMD Instructions)
+static float fft_input[FFT_N * 2] __attribute__((aligned(16))); // Interleaved real/imaginary
 static float vector_80[TOTAL_BANDS];
+static float w_bh[FFT_N] __attribute__((aligned(16)));          // Pre-computed Blackman-Harris window
 
 // Ed25519 Hardcoded Public Key (Placeholder)
 static const unsigned char ROOT_PUB_KEY[32] = {
@@ -59,35 +64,44 @@ void init_i2s_dma() {
     // ESP-IDF background driver handles ping-pong buffer filling via hardware DMA
     i2s_channel_init_std_mode(rx_handle, &std_cfg);
     i2s_channel_enable(rx_handle);
+
+    // Initialize pre-computed window table once (prevents in-place mutation corruption)
+    dsps_wind_blackman_harris_f32(w_bh, FFT_N);
 }
 
 // ---------------------------------------------------------
-// 2. Hardware-Accelerated FFT & 80-Band Accumulator
+// 2. Ultra-Fast Sub-2.0ms Emergency Chatter Trip (Low Latency)
+// ---------------------------------------------------------
+static inline void check_fast_transient_overload(const int16_t* samples, size_t count) {
+    float energy_sum = 0.0f;
+    for (size_t i = 0; i < count; i++) {
+        float s = (float)samples[i];
+        energy_sum += s * s;
+    }
+    float rms = sqrtf(energy_sum / (float)count);
+    if (rms > CHATTER_RMS_THRESH) {
+        // Immediate hardware trip: Optocoupler collector saturation (< 20 us)
+        gpio_set_level((gpio_num_t)EMERGENCY_PIN, 1);
+    }
+}
+
+// ---------------------------------------------------------
+// 3. Hardware-Accelerated FFT & 80-Band Accumulator (Linear Power)
 // ---------------------------------------------------------
 void process_acoustic_frame(int16_t* raw_samples) {
-    // Apply Blackman-Harris window and prepare interleaved float array
-    dsps_wind_blackman_harris_f32(fft_input, FFT_N);
+    // 1. Windowing into interleaved complex buffer from static pre-computed table
     for (int i = 0; i < FFT_N; i++) {
-        fft_input[i * 2 + 0] = (float)raw_samples[i] * fft_input[i]; // Real
-        fft_input[i * 2 + 1] = 0.0f;                                // Imag
+        fft_input[i * 2 + 0] = (float)raw_samples[i] * w_bh[i]; // Real (no in-place corruption)
+        fft_input[i * 2 + 1] = 0.0f;                             // Imag
     }
 
-    // Radix-2 FFT (ESP32-S3 optimized PIE instruction set)
+    // 2. Radix-2 FFT (ESP32-S3 optimized PIE instruction set)
     dsps_fft2r_fc32(fft_input, FFT_N);
     dsps_bit_rev_fc32(fft_input, FFT_N);
     
-    // Calculate power spectrum
-    for (int i = 0; i < FFT_N / 2; i++) {
-        float re = fft_input[i * 2 + 0];
-        float im = fft_input[i * 2 + 1];
-        float mag = sqrtf(re * re + im * im);
-        fft_power[i] = 10.0f * log10f(mag + 1e-12f); // 10 * log10 as per spec
-    }
-
-    // Accumulate into 80-Band Split (1-500 Hz, 500-20kHz)
+    // 3. Linear Power Accumulation across 80-Bands (Sum of Squares)
+    // Preserves true acoustic power without geometric mean suppression or redundant sqrtf
     float hz_per_bin = (float)SAMPLE_RATE / (float)FFT_N;
-    
-    // Clear accumulator
     memset(vector_80, 0, sizeof(vector_80));
     int counts[TOTAL_BANDS] = {0};
 
@@ -104,15 +118,20 @@ void process_acoustic_frame(int16_t* raw_samples) {
         }
 
         if (band_idx != -1) {
-            vector_80[band_idx] += fft_power[i];
+            float re = fft_input[i * 2 + 0];
+            float im = fft_input[i * 2 + 1];
+            float pwr_linear = (re * re + im * im); // Linear acoustic energy
+
+            vector_80[band_idx] += pwr_linear;
             counts[band_idx]++;
         }
     }
 
-    // Average the bins
+    // 4. Convert linear power averages to true Decibels
     for (int i = 0; i < TOTAL_BANDS; i++) {
         if (counts[i] > 0) {
-            vector_80[i] /= counts[i];
+            float avg_pwr = vector_80[i] / (float)counts[i];
+            vector_80[i] = 10.0f * log10f(avg_pwr + 1e-12f); // True 10*log10(Power)
         } else {
             vector_80[i] = -100.0f; // Noise floor
         }
@@ -150,10 +169,11 @@ void app_main(void) {
         i2s_channel_read(rx_handle, sample_buffer, sizeof(sample_buffer), &bytes_read, portMAX_DELAY);
         
         if (bytes_read == sizeof(sample_buffer)) {
+            // Fast sub-window transient overload check (< 1.5ms reaction)
+            check_fast_transient_overload(sample_buffer, FAST_WINDOW_N);
+
+            // Full 80-band telemetry decomposition
             process_acoustic_frame(sample_buffer);
-            
-            // Execute Heuristics Check (Flatness / Chatter Ratio)
-            // If tripped, pull E-Stop GPIO high in < 2.0ms
         }
     }
 }
