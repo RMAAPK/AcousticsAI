@@ -1,5 +1,5 @@
 ================================================================================
- Forge AI - High-Speed Edge DSP Acoustic Simulation Harness
+ RMAA Acoustics AI - High-Speed Edge DSP Acoustic Simulation Harness
  Spindle Defense System for CNCs • Sub-10ms Hardware E-Stop Interception
  Target Silicon: ESP32-S3 Dual-Core LX7 @ 240 MHz + PIE Vector Instructions
 ================================================================================

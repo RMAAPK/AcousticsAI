@@ -2,7 +2,7 @@
 set -e
 
 # ==============================================================================
-# Forge AI - High-Speed Edge DSP Benchmark & Verification Runner
+# RMAA Acoustics AI - High-Speed Edge DSP Benchmark & Verification Runner
 # ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,7 +10,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 echo "================================================================================"
-echo " Building & Executing Forge AI DSP Acoustic Benchmark Suite"
+echo " Building & Executing RMAA Acoustics AI DSP Acoustic Benchmark Suite"
 echo "================================================================================"
 
 # 1. Compile Audio Waveform Generator and Simulation Harness

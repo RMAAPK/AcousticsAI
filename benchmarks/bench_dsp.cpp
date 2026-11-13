@@ -155,7 +155,7 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "================================================================================\n";
-    std::cout << " Forge AI - High-Speed Edge DSP Acoustic Simulation Harness\n";
+    std::cout << " RMAA Acoustics AI - High-Speed Edge DSP Acoustic Simulation Harness\n";
     std::cout << " Spindle Defense System for CNCs • Sub-10ms Hardware E-Stop Interception\n";
     std::cout << " Target Silicon: ESP32-S3 Dual-Core LX7 @ 240 MHz + PIE Vector Instructions\n";
     std::cout << "================================================================================\n";

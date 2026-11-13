@@ -7,9 +7,9 @@
 #include "driver/i2s_std.h"
 #include "esp_dsp.h"
 #include "mbedtls/ed25519.h"
-#include "include/forge_stability_heuristics.hpp"
-#include "include/forge_crypto_lease.hpp"
-#include "include/forge_modal_calibration.hpp"
+#include "include/acoustics_ai_stability_heuristics.hpp"
+#include "include/acoustics_ai_crypto_lease.hpp"
+#include "include/acoustics_ai_modal_calibration.hpp"
 
 // --- CONFIGURATION ---
 #define SAMPLE_RATE         48000
@@ -202,12 +202,12 @@ void app_main(void) {
     dsps_fft2r_init_fc32(NULL, CONFIG_DSP_MAX_FFT_SIZE);
     
     init_i2s_dma();
-    forge_fro_controller_t fro_ctrl;
-    forge_entry_transient_filter_t entry_filter;
-    forge_kinematic_gate_t kin_gate;
-    forge_entry_filter_init(&entry_filter);
-    forge_kinematic_gate_init(&kin_gate, 250.0f); // 250W tare power baseline
-    forge_fro_init(&fro_ctrl);
+    acoustics_ai_fro_controller_t fro_ctrl;
+    acoustics_ai_entry_transient_filter_t entry_filter;
+    acoustics_ai_kinematic_gate_t kin_gate;
+    acoustics_ai_entry_filter_init(&entry_filter);
+    acoustics_ai_kinematic_gate_init(&kin_gate, 250.0f); // 250W tare power baseline
+    acoustics_ai_fro_init(&fro_ctrl);
     int16_t sample_buffer[FFT_N];
 
     while (1) {
@@ -225,20 +225,20 @@ void app_main(void) {
             process_acoustic_frame(sample_buffer);
 
             // 3. Runout-Compensated Comb Filter & Spindle Asymmetry Tracking
-            forge_runout_metrics_t runout_m = calculate_thsr_runout_comp(vector_80, 24000.0f, 2, SAMPLE_RATE, FFT_N, 0.20f);
+            acoustics_ai_runout_metrics_t runout_m = calculate_thsr_runout_comp(vector_80, 24000.0f, 2, SAMPLE_RATE, FFT_N, 0.20f);
             float gamma = runout_m.thsr_comp;
 
             // 4. Material Inference in initial 100ms of cut
             if (fro_ctrl.material == MAT_UNKNOWN) {
                 float h_spec = calculate_spectral_entropy(vector_80);
-                workpiece_mat_t detected_mat = forge_classify_workpiece(
+                workpiece_mat_t detected_mat = acoustics_ai_classify_workpiece(
                     h_spec,
                     runout_m.spectral_centroid_hz,
                     runout_m.high_low_ratio,
                     runout_m.comb_crest_factor
                 );
                 if (detected_mat != MAT_UNKNOWN) {
-                    forge_fro_set_material(&fro_ctrl, detected_mat);
+                    acoustics_ai_fro_set_material(&fro_ctrl, detected_mat);
                 }
             }
 
@@ -246,7 +246,7 @@ void app_main(void) {
             // Spindle VFD power read via Modbus register (simulated/polled: 420W in cut, 260W air)
             float vfd_pwr_watts = 420.0f;
             float ambient_rms = 100.0f;
-            bool is_in_solid_cut = forge_kinematic_gate_step(
+            bool is_in_solid_cut = acoustics_ai_kinematic_gate_step(
                 &kin_gate, 
                 vfd_pwr_watts, 
                 runout_m.tooth_energy, 
@@ -257,7 +257,7 @@ void app_main(void) {
 
             // 6. Material-Tuned Autonomous Closed-Loop FRO & Emergency Interlock
             if (is_in_solid_cut) {
-                float fro_override = forge_fro_step(&fro_ctrl, gamma, 0.04267f);
+                float fro_override = acoustics_ai_fro_step(&fro_ctrl, gamma, 0.04267f);
 
                 // Trip emergency defense if below material stability boundary or single-flute cleavage detected
                 float chatter_boundary = fro_ctrl.profile.gamma_ref - 0.25f;

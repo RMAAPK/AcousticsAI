@@ -1,15 +1,15 @@
-# ENGINEERING RELEASE • REV 1.1 (HARDENED) — FORGE AI — HARDWARE PROTOTYPE
+# ENGINEERING RELEASE • REV 1.0 — RMAA ACOUSTICS AI — HARDWARE PROTOTYPE
 ### Complete Bill of Materials (BOM) & Bench Assembly Technical Specifications
-**Author:** Ali CNC Engineering • **Project:** ForgeAI Spindle Defense System for CNCs  
+**Author:** Ali CNC Engineering • **Project:** RMAA Acoustics AI Spindle Defense System for CNCs
 **Target Silicon:** ESP32-S3 (Dual-Core Xtensa LX7 @ 240 MHz) • **Response Latency:** < 2.0 ms (Edge E-Stop)  
 **Estimated Local Market Total:** Rs. 3,000 – 3,400 PKR (~$10–12 USD) • **Licensed under:** BSL 1.1 • Rawalpindi, Pakistan  
-**Original Engineering PDF:** [`hardware/FORGE_AI_HARDWARE_PROTOTYPE_REV1.1.pdf`](FORGE_AI_HARDWARE_PROTOTYPE_REV1.0.pdf)
+**Engineering hardware prototype PDF:** [Acoustics AI hardware prototype (Rev 1.0)](ACOUSTICS_AI_HARDWARE_PROTOTYPE_REV1.0.pdf)
 
 ---
 
 ## 1. Executive Summary & System Overview
 
-The **Forge AI Hardware Prototype** is an industrial edge acoustic monitoring instrument designed to detect high-frequency micro-chatter, spindle bearing wear, and cutting tool fracture on CNC milling spindles before catastrophic breakage occurs.
+The **RMAA Acoustics AI Hardware Prototype** is an industrial edge acoustic monitoring instrument designed to detect high-frequency micro-chatter, spindle bearing wear, and cutting tool fracture on CNC milling spindles before catastrophic breakage occurs.
 
 Audio is ingested at 48 kHz (24-bit Mono) via an omnidirectional digital MEMS microphone over an I2S DMA bus, transformed into an 80-band acoustic vector using hardware-accelerated Radix-2 Real FFT, and evaluated against safety heuristics. A tripped anomaly triggers an optically isolated solid-state E-Stop circuit within **< 2.0 milliseconds** (total system interception guaranteed **< 10 ms**).
 

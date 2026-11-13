@@ -6,7 +6,7 @@
 ---
 
 **Licensor:** RMAA Holdings  
-**Licensed Work:** Forge AI  
+**Licensed Work:** RMAA Acoustics AI
 **Additional Use Grant:** You may read, compile, and run the software for non-production, audit, or personal research purposes. You may not deploy the software in a commercial, production CNC environment without a commercial license.  
 **Change Date:** 2030-10-09  
 **Change License:** MIT License  

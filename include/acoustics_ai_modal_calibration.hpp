@@ -1,5 +1,5 @@
-#ifndef FORGE_MODAL_CALIBRATION_HPP
-#define FORGE_MODAL_CALIBRATION_HPP
+#ifndef ACOUSTICS_AI_MODAL_CALIBRATION_HPP
+#define ACOUSTICS_AI_MODAL_CALIBRATION_HPP
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -10,9 +10,9 @@
 extern "C" {
 #endif
 
-#define FORGE_TAP_BLANKING_SAMPLES    24     // Discard first 0.5ms @ 48kHz (contact shock)
-#define FORGE_TAP_DECAY_SAMPLES       1024   // 21.33 ms analysis window
-#define FORGE_MODBUS_REG_BASE         0x0040
+#define ACOUSTICS_AI_TAP_BLANKING_SAMPLES    24     // Discard first 0.5ms @ 48kHz (contact shock)
+#define ACOUSTICS_AI_TAP_DECAY_SAMPLES       1024   // 21.33 ms analysis window
+#define ACOUSTICS_AI_MODBUS_REG_BASE         0x0040
 
 typedef enum {
     MODAL_STATE_IDLE       = 0,
@@ -25,23 +25,23 @@ typedef struct {
     uint16_t rpm_sweet_spot;          // Recommended stable RPM
     uint8_t  lobe_index;              // Integer lobe k
     float    predicted_gain_factor;   // a_lim / a_asymptote scaling
-} forge_lobe_rec_t;
+} acoustics_ai_lobe_rec_t;
 
 typedef struct {
     float             f_n;                  // Extracted dominant natural frequency (Hz)
     float             zeta;                 // Estimated modal damping ratio
     modal_cal_state_t state;                // Calibration machine state
     uint8_t           valid_lobe_count;     // Number of valid operational lobes
-    forge_lobe_rec_t  candidate_lobes[4];   // Top sweet-spot recommendations
+    acoustics_ai_lobe_rec_t  candidate_lobes[4];   // Top sweet-spot recommendations
     float             noise_sigma;          // Ambient noise standard deviation
-} forge_modal_context_t;
+} acoustics_ai_modal_context_t;
 
 /**
  * @brief Initialize modal calibration state machine.
  */
-static inline void forge_modal_init(forge_modal_context_t* ctx, float ambient_sigma) {
+static inline void acoustics_ai_modal_init(acoustics_ai_modal_context_t* ctx, float ambient_sigma) {
     if (!ctx) return;
-    memset(ctx, 0, sizeof(forge_modal_context_t));
+    memset(ctx, 0, sizeof(acoustics_ai_modal_context_t));
     ctx->noise_sigma = (ambient_sigma > 1.0f) ? ambient_sigma : 10.0f;
     ctx->state = MODAL_STATE_IDLE;
 }
@@ -50,10 +50,10 @@ static inline void forge_modal_init(forge_modal_context_t* ctx, float ambient_si
  * @brief Continuous parabolic interpolation to find continuous peak frequency.
  * Refines 46.875 Hz discrete FFT bin down to +/- 1.5 - 3.0 Hz.
  */
-static inline float forge_parabolic_interpolate_peak(const float* mag_db,
+static inline float acoustics_ai_parabolic_interpolate_peak(const float* mag_db,
                                                      int k_peak,
                                                      float hz_per_bin) {
-    if (k_peak <= 0 || k_peak >= (FORGE_TAP_DECAY_SAMPLES / 2) - 1) {
+    if (k_peak <= 0 || k_peak >= (ACOUSTICS_AI_TAP_DECAY_SAMPLES / 2) - 1) {
         return (float)k_peak * hz_per_bin;
     }
 
@@ -78,7 +78,7 @@ static inline float forge_parabolic_interpolate_peak(const float* mag_db,
  * Fits: ln(A[n]) = beta_0 - lambda * n
  * where lambda = 2 * pi * f_n * zeta * T_s
  */
-static inline float forge_extract_damping_ratio(const float* envelope,
+static inline float acoustics_ai_extract_damping_ratio(const float* envelope,
                                                 int count,
                                                 float f_n,
                                                 float sample_rate) {
@@ -127,7 +127,7 @@ static inline float forge_extract_damping_ratio(const float* envelope,
  * @brief Pre-compute optimal chatter-free spindle sweet-spot speeds from Altintas-Budak lobe theory.
  * Identifies maximum depth of cut sweet spots within spindle hardware limits.
  */
-static inline void forge_compute_spindle_lobes(forge_modal_context_t* ctx,
+static inline void acoustics_ai_compute_spindle_lobes(acoustics_ai_modal_context_t* ctx,
                                                uint8_t flutes,
                                                uint16_t rpm_min,
                                                uint16_t rpm_max) {
@@ -163,7 +163,7 @@ static inline void forge_compute_spindle_lobes(forge_modal_context_t* ctx,
  * @param rpm_max Maximum machine spindle speed (e.g. 24000)
  * @return True if natural frequency and sweet spots successfully resolved
  */
-static inline bool forge_process_tap_impact(forge_modal_context_t* ctx,
+static inline bool acoustics_ai_process_tap_impact(acoustics_ai_modal_context_t* ctx,
                                             const int16_t* tap_pcm,
                                             uint8_t flutes,
                                             uint16_t rpm_min,
@@ -171,7 +171,7 @@ static inline bool forge_process_tap_impact(forge_modal_context_t* ctx,
     if (!ctx || !tap_pcm) return false;
 
     // 1. Skip initial contact deformation (24 samples = 0.5 ms)
-    const int16_t* decay_pcm = tap_pcm + FORGE_TAP_BLANKING_SAMPLES;
+    const int16_t* decay_pcm = tap_pcm + ACOUSTICS_AI_TAP_BLANKING_SAMPLES;
 
     // 2. Compute peak search in frequency domain (1024-pt magnitude array simulation)
     // Find dominant spectral peak within [1000 Hz, 8000 Hz]
@@ -189,7 +189,7 @@ static inline bool forge_process_tap_impact(forge_modal_context_t* ctx,
         float re = 0.0f;
         float im = 0.0f;
         float omega = 2.0f * 3.141592653589793f * (float)k / 1024.0f;
-        for (int n = 0; n < FORGE_TAP_DECAY_SAMPLES; n++) {
+        for (int n = 0; n < ACOUSTICS_AI_TAP_DECAY_SAMPLES; n++) {
             float s = (float)decay_pcm[n];
             re += s * cosf(omega * (float)n);
             im -= s * sinf(omega * (float)n);
@@ -203,7 +203,7 @@ static inline bool forge_process_tap_impact(forge_modal_context_t* ctx,
     }
 
     // 3. Continuous Parabolic Peak Interpolation
-    ctx->f_n = forge_parabolic_interpolate_peak(mag_db, k_peak, hz_per_bin);
+    ctx->f_n = acoustics_ai_parabolic_interpolate_peak(mag_db, k_peak, hz_per_bin);
 
     // 4. Construct envelope & estimate damping ratio zeta
     float envelope[128];
@@ -216,10 +216,10 @@ static inline bool forge_process_tap_impact(forge_modal_context_t* ctx,
         }
         envelope[i] = max_val;
     }
-    ctx->zeta = forge_extract_damping_ratio(envelope, env_count, ctx->f_n, 48000.0f / 8.0f);
+    ctx->zeta = acoustics_ai_extract_damping_ratio(envelope, env_count, ctx->f_n, 48000.0f / 8.0f);
 
     // 5. Compute Optimal Stability Sweet-Spot RPMs
-    forge_compute_spindle_lobes(ctx, flutes, rpm_min, rpm_max);
+    acoustics_ai_compute_spindle_lobes(ctx, flutes, rpm_min, rpm_max);
 
     if (ctx->valid_lobe_count > 0 && ctx->f_n >= 1000.0f && ctx->f_n <= 8000.0f) {
         ctx->state = MODAL_STATE_SUCCESS;
@@ -240,10 +240,10 @@ typedef struct {
     uint16_t reg_secondary_rpm;      // Register 0x0044: Secondary Sweet-Spot RPM
     uint16_t reg_gain_factor_scaled; // Register 0x0045: Depth Multiplier (factor * 100)
     uint16_t reg_state;              // Register 0x0046: 0=IDLE, 1=ARMED, 2=SUCCESS, 3=POOR_FIT
-} forge_modal_modbus_export_t;
+} acoustics_ai_modal_modbus_export_t;
 
-static inline forge_modal_modbus_export_t forge_export_modal_modbus(const forge_modal_context_t* ctx) {
-    forge_modal_modbus_export_t out;
+static inline acoustics_ai_modal_modbus_export_t acoustics_ai_export_modal_modbus(const acoustics_ai_modal_context_t* ctx) {
+    acoustics_ai_modal_modbus_export_t out;
     memset(&out, 0, sizeof(out));
     if (!ctx) return out;
 
@@ -265,4 +265,4 @@ static inline forge_modal_modbus_export_t forge_export_modal_modbus(const forge_
 }
 #endif
 
-#endif // FORGE_MODAL_CALIBRATION_HPP
+#endif // ACOUSTICS_AI_MODAL_CALIBRATION_HPP

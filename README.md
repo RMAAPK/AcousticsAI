@@ -2,7 +2,7 @@
 
 > [!IMPORTANT]
 > **Proprietary Notice & Institutional Attribution**
-> **Forge AI** is an intellectual property and flagship industrial execution product of **RMAA HOLDINGS**. All rights reserved.
+> **RMAA Acoustics AI** is an intellectual property and flagship industrial execution product of **RMAA HOLDINGS**. All rights reserved.
 
 > [!CAUTION]
 > **Advisory & Experimental Disclaimer for Evaluators and Investors**
@@ -10,7 +10,7 @@
 
 ---
 
-# Forge AI - Spindle Defense System for CNCs
+# RMAA Acoustics AI — CNC Spindle Defense System
 ### Pure Bare-Metal DSP Silicon • 80-Band Frequency Partitioning • Microsecond Optical E-Stop
 Maintained by **RMAA HOLDINGS** • Licensed under **BSL 1.1**
 
@@ -18,7 +18,7 @@ Maintained by **RMAA HOLDINGS** • Licensed under **BSL 1.1**
 [![Platform: ESP32-S3](https://img.shields.io/badge/Platform-ESP32--S3-red.svg)](esp_dsp_firmware.cpp)
 [![Architecture: Bare--Metal DSP](https://img.shields.io/badge/Architecture-Bare--Metal%20DSP-emerald.svg)](esp_dsp_firmware.cpp)
 
-Forge AI is an industrial-grade bare-metal edge hardware defense system designed for high-speed CNC spindle protection, acoustic load classification, deterministic tool breakage defense, and autonomous closed-loop feed-rate override (FRO).
+RMAA Acoustics AI is an industrial-grade bare-metal edge hardware defense system designed for high-speed CNC spindle protection, acoustic load classification, deterministic tool breakage defense, and autonomous closed-loop feed-rate override (FRO).
 
 Operating directly on edge silicon (ESP32-S3 @ 240 MHz with Xtensa LX7 SIMD vector extensions), it continuously samples spindle micro-acoustics at 48 kHz / 24-bit, executes Radix-2 Real FFTs, partitions the spectrum into 80 physical frequency bands, and trips an optical E-stop circuit in **under 1.5 milliseconds** upon detecting severe chatter resonance, catastrophic tip fracture, or tool deflection.
 
@@ -86,11 +86,11 @@ Operating directly on edge silicon (ESP32-S3 @ 240 MHz with Xtensa LX7 SIMD vect
 ## 📁 Repository Manifest
 
 - **[`esp_dsp_firmware.cpp`](esp_dsp_firmware.cpp):** Bare-metal C++ firmware for the ESP32-S3 running FreeRTOS with hardware-accelerated ESP-DSP routines (I2S DMA, Blackman-Harris windowing, Radix-2 FFT, 80-band accumulator, and safety interlocks).
-- **[`include/forge_stability_heuristics.hpp`](include/forge_stability_heuristics.hpp):** Real-time cutting mechanics algorithms: Altintas-Budak THSR comb filter, runout compensation, 15ms entry plunge filter, material classifier, kinematic $G0$ transit gate, and closed-loop FRO controller.
-- **[`include/forge_crypto_lease.hpp`](include/forge_crypto_lease.hpp):** Air-gapped cryptographic lease validation, spindle work-sensing ticks, flash ring commit, and authenticated telemetry chaining.
-- **[`include/forge_modal_calibration.hpp`](include/forge_modal_calibration.hpp):** In-situ acoustic tap-testing, parabolic sub-bin frequency interpolation, Hilbert decay damping extraction, and Modbus lobe recommendations.
+- **[`include/acoustics_ai_stability_heuristics.hpp`](include/acoustics_ai_stability_heuristics.hpp):** Real-time cutting mechanics algorithms: Altintas-Budak THSR comb filter, runout compensation, 15ms entry plunge filter, material classifier, kinematic $G0$ transit gate, and closed-loop FRO controller.
+- **[`include/acoustics_ai_crypto_lease.hpp`](include/acoustics_ai_crypto_lease.hpp):** Air-gapped cryptographic lease validation, spindle work-sensing ticks, flash ring commit, and authenticated telemetry chaining.
+- **[`include/acoustics_ai_modal_calibration.hpp`](include/acoustics_ai_modal_calibration.hpp):** In-situ acoustic tap-testing, parabolic sub-bin frequency interpolation, Hilbert decay damping extraction, and Modbus lobe recommendations.
 - **[`hardware/BOM_REV1.0.md`](hardware/BOM_REV1.0.md):** Official hardware BOM: 6N137 high-speed optoisolator, 2N7002 MOSFET 24V pull-down, Shore 40A acoustic compression gasket, and shielded twisted-pair cabling.
-- **[`hardware/FORGE_AI_HARDWARE_PROTOTYPE_REV1.0.pdf`](hardware/FORGE_AI_HARDWARE_PROTOTYPE_REV1.0.pdf):** Official Engineering Release Rev 1.0 PDF document authored by Ali CNC Engineering.
+- **[`hardware/ACOUSTICS_AI_HARDWARE_PROTOTYPE_REV1.0.pdf`](hardware/ACOUSTICS_AI_HARDWARE_PROTOTYPE_REV1.0.pdf):** Official Engineering Release Rev 1.0 PDF document authored by Ali CNC Engineering.
 - **[`benchmarks/`](benchmarks/):** Reproducible C++17 desktop simulation harness ([`bench_dsp.cpp`](benchmarks/bench_dsp.cpp)), automated test runner ([`run_benchmark.sh`](benchmarks/run_benchmark.sh)), and full empirical execution logs ([`desktop_dsp_benchmark_linux.txt`](benchmarks/desktop_dsp_benchmark_linux.txt)).
 - **[`credentials/`](credentials/):** Physical CNC machining certifications (TITANS of CNC multi-axis CAD/CAM).
 - **[`LICENSE.md`](LICENSE.md):** Business Source License 1.1 terms.

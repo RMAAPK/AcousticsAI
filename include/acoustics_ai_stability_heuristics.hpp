@@ -1,5 +1,5 @@
-#ifndef FORGE_STABILITY_HEURISTICS_HPP
-#define FORGE_STABILITY_HEURISTICS_HPP
+#ifndef ACOUSTICS_AI_STABILITY_HEURISTICS_HPP
+#define ACOUSTICS_AI_STABILITY_HEURISTICS_HPP
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -10,9 +10,9 @@
 extern "C" {
 #endif
 
-#define FORGE_TOTAL_BANDS         80
-#define FORGE_CHATTER_START_BAND  10
-#define FORGE_CHATTER_END_BAND    79
+#define ACOUSTICS_AI_TOTAL_BANDS         80
+#define ACOUSTICS_AI_CHATTER_START_BAND  10
+#define ACOUSTICS_AI_CHATTER_END_BAND    79
 
 typedef enum {
     TOOL_STATE_HEALTHY     = 0,
@@ -54,10 +54,10 @@ typedef struct {
     float fro_min_floor;     // Hard anti-rubbing / anti-BUE clamp (25% - 40%)
     float kp;                // PI proportional gain
     float ki;                // PI integral gain
-} forge_material_profile_t;
+} acoustics_ai_material_profile_t;
 
-static inline forge_material_profile_t forge_get_material_profile(workpiece_mat_t mat) {
-    forge_material_profile_t p;
+static inline acoustics_ai_material_profile_t acoustics_ai_get_material_profile(workpiece_mat_t mat) {
+    acoustics_ai_material_profile_t p;
     switch (mat) {
         case MAT_ALUMINUM:
             p.gamma_ref         = 0.78f;
@@ -100,7 +100,7 @@ static inline forge_material_profile_t forge_get_material_profile(workpiece_mat_
     return p;
 }
 
-static inline workpiece_mat_t forge_classify_workpiece(float h_spec,
+static inline workpiece_mat_t acoustics_ai_classify_workpiece(float h_spec,
                                                        float c_spec,
                                                        float psi_hl,
                                                        float cf_comb) {
@@ -123,9 +123,9 @@ typedef struct {
     float last_peak_freq;
     float tare_power_watts;     // Baseline spindle idle power P_tare(RPM)
     machine_kinematic_state_t state;
-} forge_kinematic_gate_t;
+} acoustics_ai_kinematic_gate_t;
 
-static inline void forge_kinematic_gate_init(forge_kinematic_gate_t* g, float tare_power_watts) {
+static inline void acoustics_ai_kinematic_gate_init(acoustics_ai_kinematic_gate_t* g, float tare_power_watts) {
     g->last_peak_freq = 0.0f;
     g->tare_power_watts = tare_power_watts;
     g->state = MACHINE_STATE_AIR_CUTTING;
@@ -141,7 +141,7 @@ static inline void forge_kinematic_gate_init(forge_kinematic_gate_t* g, float ta
  * @param dt_frame_sec Elapsed frame time (0.04267s)
  * @return True if system is in solid mechanical cut (Armed); False if Muted/Standby
  */
-static inline bool forge_kinematic_gate_step(forge_kinematic_gate_t* g,
+static inline bool acoustics_ai_kinematic_gate_step(acoustics_ai_kinematic_gate_t* g,
                                              float vfd_active_power,
                                              float tooth_energy,
                                              float ambient_energy,
@@ -184,9 +184,9 @@ typedef struct {
     float peak_entry_rms;
     float dE_dt_threshold;
     float last_rms;
-} forge_entry_transient_filter_t;
+} acoustics_ai_entry_transient_filter_t;
 
-static inline void forge_entry_filter_init(forge_entry_transient_filter_t* f) {
+static inline void acoustics_ai_entry_filter_init(acoustics_ai_entry_transient_filter_t* f) {
     f->state = TRANSIENT_STATE_STEADY;
     f->pre_contact_rms = 100.0f;
     f->elapsed_ms = 0.0f;
@@ -195,7 +195,7 @@ static inline void forge_entry_filter_init(forge_entry_transient_filter_t* f) {
     f->last_rms = 100.0f;
 }
 
-static inline bool forge_entry_filter_step(forge_entry_transient_filter_t* f,
+static inline bool acoustics_ai_entry_filter_step(acoustics_ai_entry_transient_filter_t* f,
                                            float current_rms,
                                            float dt_ms,
                                            bool* out_suppress_trip) {
@@ -261,20 +261,20 @@ typedef struct {
     float dominant_peak_freq;    // Frequency of highest peak (for Doppler df/dt tracking)
     float tooth_energy;          // Energy strictly at tooth pass frequency
     bool  is_flute_fractured;    // Asymmetry index spike (>300% jump) detection
-} forge_runout_metrics_t;
+} acoustics_ai_runout_metrics_t;
 
 /**
  * @brief Generalized runout and multi-spindle cross-talk aware comb filter.
  * Notches out adjacent spindle harmonics (rpm_spindle2) from asynchronous chatter budget.
  */
-static inline forge_runout_metrics_t calculate_thsr_runout_comp_ex(const float* bands_db,
+static inline acoustics_ai_runout_metrics_t calculate_thsr_runout_comp_ex(const float* bands_db,
                                                                    float rpm,
                                                                    int flutes,
                                                                    float rpm_spindle2,
                                                                    float sample_rate,
                                                                    int fft_size,
                                                                    float baseline_rho) {
-    forge_runout_metrics_t metrics;
+    acoustics_ai_runout_metrics_t metrics;
     memset(&metrics, 0, sizeof(metrics));
 
     float f_rot = rpm / 60.0f;
@@ -297,7 +297,7 @@ static inline forge_runout_metrics_t calculate_thsr_runout_comp_ex(const float* 
     float max_any_pwr = 0.0f;
     float max_any_freq = 0.0f;
 
-    for (int b = 0; b < FORGE_TOTAL_BANDS; b++) {
+    for (int b = 0; b < ACOUSTICS_AI_TOTAL_BANDS; b++) {
         float f_center = (b < 10) ? (1.0f + b * 49.9f + 24.95f) : (500.0f + (b - 10) * 278.57f + 139.28f);
         float pwr_linear = powf(10.0f, bands_db[b] / 10.0f);
         float tolerance = (b < 10) ? 25.0f : 140.0f;
@@ -396,7 +396,7 @@ static inline forge_runout_metrics_t calculate_thsr_runout_comp_ex(const float* 
     return metrics;
 }
 
-static inline forge_runout_metrics_t calculate_thsr_runout_comp(const float* bands_db,
+static inline acoustics_ai_runout_metrics_t calculate_thsr_runout_comp(const float* bands_db,
                                                                 float rpm,
                                                                 int flutes,
                                                                 float sample_rate,
@@ -406,7 +406,7 @@ static inline forge_runout_metrics_t calculate_thsr_runout_comp(const float* ban
 }
 
 static inline float calculate_thsr(const float* bands_db, float rpm, int flutes, float sample_rate, int fft_size) {
-    forge_runout_metrics_t m = calculate_thsr_runout_comp(bands_db, rpm, flutes, sample_rate, fft_size, 0.20f);
+    acoustics_ai_runout_metrics_t m = calculate_thsr_runout_comp(bands_db, rpm, flutes, sample_rate, fft_size, 0.20f);
     return m.thsr_comp;
 }
 
@@ -418,7 +418,7 @@ static inline float calculate_spectral_entropy(const float* bands_db) {
     float sum_pwr = 0.0f;
 
     for (int i = 0; i < 70; i++) {
-        pwr[i] = powf(10.0f, bands_db[i + FORGE_CHATTER_START_BAND] / 10.0f);
+        pwr[i] = powf(10.0f, bands_db[i + ACOUSTICS_AI_CHATTER_START_BAND] / 10.0f);
         sum_pwr += pwr[i];
     }
 
@@ -468,24 +468,24 @@ static inline float calculate_burst_kurtosis(const float* sub_rms, int count) {
 // ----------------------------------------------------------------------------
 typedef struct {
     workpiece_mat_t          material;
-    forge_material_profile_t profile;
+    acoustics_ai_material_profile_t profile;
     float                    integral;
     float                    fro_current; // 25.0% to 100.0%
-} forge_fro_controller_t;
+} acoustics_ai_fro_controller_t;
 
-static inline void forge_fro_init(forge_fro_controller_t* c) {
+static inline void acoustics_ai_fro_init(acoustics_ai_fro_controller_t* c) {
     c->material = MAT_UNKNOWN;
-    c->profile = forge_get_material_profile(MAT_UNKNOWN);
+    c->profile = acoustics_ai_get_material_profile(MAT_UNKNOWN);
     c->integral = 0.0f;
     c->fro_current = 100.0f;
 }
 
-static inline void forge_fro_set_material(forge_fro_controller_t* c, workpiece_mat_t mat) {
+static inline void acoustics_ai_fro_set_material(acoustics_ai_fro_controller_t* c, workpiece_mat_t mat) {
     c->material = mat;
-    c->profile = forge_get_material_profile(mat);
+    c->profile = acoustics_ai_get_material_profile(mat);
 }
 
-static inline float forge_fro_step(forge_fro_controller_t* c, float gamma, float dt) {
+static inline float acoustics_ai_fro_step(acoustics_ai_fro_controller_t* c, float gamma, float dt) {
     float err = 0.0f;
     if (gamma < c->profile.gamma_ref) {
         err = c->profile.gamma_ref - gamma; // Chatter deficit scaled to material
@@ -519,4 +519,4 @@ static inline float forge_fro_step(forge_fro_controller_t* c, float gamma, float
 }
 #endif
 
-#endif // FORGE_STABILITY_HEURISTICS_HPP
+#endif // ACOUSTICS_AI_STABILITY_HEURISTICS_HPP
