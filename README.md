@@ -5,7 +5,7 @@
 > 
 > **RMAA Acoustics AI** is an intellectual property and flagship industrial execution product of **RMAA HOLDINGS**. All rights reserved.
 > 
-> ***Ali CNC*** Is Part Of ***RMAA Holdings*** And ***Accounstics AI*** Is New Name Of ***Forge AI***.
+> ***Ali CNC*** Is Part Of ***RMAA Holdings*** And ***Acoustics AI*** Is New Name Of ***Forge AI***.
 
 > [!CAUTION]
 > **Advisory & Experimental Disclaimer for Evaluators and Investors**
