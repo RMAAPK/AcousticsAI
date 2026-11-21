@@ -2,10 +2,14 @@
 
 > [!IMPORTANT]
 > **Proprietary Notice & Institutional Attribution**
+> 
 > **RMAA Acoustics AI** is an intellectual property and flagship industrial execution product of **RMAA HOLDINGS**. All rights reserved.
+> 
+> ***Ali CNC*** Is Part Of ***RMAA Holdings*** And ***Accounstics AI*** Is New Name Of ***Forge AI***.
 
 > [!CAUTION]
 > **Advisory & Experimental Disclaimer for Evaluators and Investors**
+> 
 > This repository is maintained as an active research and development workspace. Modules within this codebase undergo rapid iteration and autonomous synthesis. Portions of the codebase are experimental and subject to ongoing validation and physical bench testing. Evaluators, partners, and investors should review system claims against the hardware validation logs in `/benchmarks` and official entity certifications in `/credentials`.
 
 ---
